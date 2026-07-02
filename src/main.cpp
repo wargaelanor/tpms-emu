@@ -1,4 +1,4 @@
-/**
+﻿/**
  * TPMS Emulator for Acura RDX 2008 - v5 (ESP32-C3 Port)
  *
  * v5 changes: ported from ESP8266 D1 Mini to ESP32-C3 Mini
@@ -66,7 +66,7 @@
 // Pin Definitions (platform-specific)
 // ============================================================================
 #if defined(ESP8266)
-// ESP8266 NodeMCU:
+// ESP8266 D1 Mini:
 //   D5 (GPIO14) — SCK   |  D6 (GPIO12) — MOSI  |  D7 (GPIO13) — MISO
 //   D8 (GPIO15) — CSN   |  D1 (GPIO5)  — GDO0  |  D2 (GPIO4)  — GDO2
 //   D4 (GPIO2)  — Power (N-MOSFET)     |  D0 (GPIO16) — RST (wake)

@@ -1,4 +1,4 @@
-# TPMS Emulator / Sniffer v7.3
+﻿# TPMS Emulator / Sniffer v7.3
 
 ESP32-C3 + CC1101 сниффер TPMS и ESP8266 + CC1101 эмулятор TPMS для **Acura RDX 2008** (датчики PMV-107J, 315 MHz).
 
@@ -20,7 +20,7 @@ ESP32-C3 + CC1101 сниффер TPMS и ESP8266 + CC1101 эмулятор TPMS 
 | Компонент | Кол-во | Описание | Цена |
 |-----------|--------|----------|------|
 | ESP32-C3 Mini DevKit | 1 | Плата сниффера | ~300₽ |
-| ESP8266 NodeMCU | 1 | Плата эмулятора | ~150₽ |
+| ESP8266 D1 Mini | 1 | Плата эмулятора | ~150₽ |
 | CC1101 модуль (315 MHz) | 2 | RF трансивер с пружинной антенной | ~100₽ |
 | TP4056 модуль | 2 | Зарядка 18650 (1A) | ~50₽ |
 | DW01 + FS8205 | 2 | Защита батареи | ~10₽ |
@@ -44,7 +44,7 @@ GPIO4               →  Pin 7 (GDO0)     GDO0
 GPIO5               →  Pin 8 (GDO2)     GDO2
 ```
 
-### ESP8266 NodeMCU → CC1101 Подключение
+### ESP8266 D1 Mini → CC1101 Подключение
 
 ```
 ESP8266 Pin         →  CC1101 Pin       Назначение
@@ -100,7 +100,7 @@ Vbat    Vout    Статус
 pio run -e esp32-c3-devkitm-1
 
 # ESP8266 эмулятор
-pio run -e esp8266-nodemcu
+pio run -e esp8266-d1mini
 ```
 
 ### Команды прошивки
@@ -110,7 +110,7 @@ pio run -e esp8266-nodemcu
 pio run -e esp32-c3-devkitm-1 -t upload --upload-port COM3
 
 # ESP8266 (COM8)
-pio run -e esp8266-nodemcu -t upload --upload-port COM8
+pio run -e esp8266-d1mini -t upload --upload-port COM8
 ```
 
 > **Внимание**: После прошивки ESP32-C3 нужно нажать кнопку RST на плате.

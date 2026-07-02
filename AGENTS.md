@@ -1,11 +1,11 @@
-# AGENTS.md — TPMS Sniffer/Emulator Project
+﻿# AGENTS.md — TPMS Sniffer/Emulator Project
 
 ## Overview
 ESP32-C3 + CC1101 TPMS sniffer and ESP8266 + CC1101 TPMS emulator for Acura RDX 2008 (PMV-107J sensors, 315 MHz).
 
 ## Hardware
 - **ESP32-C3 Mini** — sniffer (CC1101 on SPI, 315 MHz). COM3.
-- **ESP8266 NodeMCU** — emulator (CC1101 on SPI, 315 MHz). COM8. Powered from charger.
+- **ESP8266 D1 Mini** — emulator (CC1101 on SPI, 315 MHz). COM8. Powered from charger.
 - Both use CC1101 modules with spring antennas.
 
 ## Sensor Protocol (PMV-107J)
@@ -31,7 +31,7 @@ ESP32-C3 + CC1101 TPMS sniffer and ESP8266 + CC1101 TPMS emulator for Acura RDX 
 pio run -e esp32-c3-devkitm-1 -t upload --upload-port COM3
 
 # ESP8266 emulator
-pio run -e esp8266-nodemcu -t upload --upload-port COM8
+pio run -e esp8266-D1 Mini -t upload --upload-port COM8
 ```
 
 ## Serial Commands
