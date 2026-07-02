@@ -49,7 +49,7 @@ GPIO5               →  Pin 8 (GDO2)     GDO2
 ```
 ESP8266 Pin         →  CC1101 Pin       Назначение
 ──────────────────────────────────────────────────────
-D4 (GPIO2)          →  VCC через P-MOSFET (AO3401)  Питание
+D4 (GPIO2)          →  CC1101 GND через N-MOSFET (2N7002)  Питание (low-side switch)
 GND                 →  Pin 2 (GND)      Земля
 D6 (GPIO12 / HSPI)  →  Pin 3 (SI/DIN)   SPI MOSI
 D7 (GPIO13 / HSPI)  →  Pin 4 (SO/DOUT)  SPI MISO
@@ -58,6 +58,9 @@ D8 (GPIO15)         →  Pin 6 (CSN)      Chip Select
 D1 (GPIO5)          →  Pin 7 (GDO0)     GDO0
 D2 (GPIO4)          →  Pin 8 (GDO2)     GDO2
 ```
+
+> **Логика питания:** D4 = HIGH → 2N7002 ON → CC1101 GND подключена → модуль работает.
+> CC1101 VCC всегда подключено к VCC_3V3 (3.3V).
 
 ### Делитель напряжения батареи (обе платы)
 
