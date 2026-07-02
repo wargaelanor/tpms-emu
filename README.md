@@ -49,7 +49,7 @@ GPIO5               →  Pin 8 (GDO2)     GDO2
 ```
 ESP8266 Pin         →  CC1101 Pin       Назначение
 ──────────────────────────────────────────────────────
-D4 (GPIO2)          →  VCC через N-MOSFET  Питание (через MOSFET)
+D4 (GPIO2)          →  VCC через P-MOSFET (AO3401)  Питание
 GND                 →  Pin 2 (GND)      Земля
 D6 (GPIO12 / HSPI)  →  Pin 3 (SI/DIN)   SPI MOSI
 D7 (GPIO13 / HSPI)  →  Pin 4 (SO/DOUT)  SPI MISO
