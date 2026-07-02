@@ -57,10 +57,13 @@ D5 (GPIO14 / HSPI)  →  Pin 5 (CLK)      SPI Clock
 D8 (GPIO15)         →  Pin 6 (CSN)      Chip Select
 D1 (GPIO5)          →  Pin 7 (GDO0)     GDO0
 D2 (GPIO4)          →  Pin 8 (GDO2)     GDO2
+D0 (GPIO16)         →  RST              Deep Sleep wake (припаять провод!)
 ```
 
 > **Логика питания:** D4 = HIGH → 2N7002 ON → CC1101 GND подключена → модуль работает.
 > CC1101 VCC всегда подключено к VCC_3V3 (3.3V).
+
+> **Deep Sleep:** Обязательно припаять провод D0 (GPIO16) → RST. Иначе ESP8266 не проснётся после deep sleep!
 
 ### Делитель напряжения батареи (обе платы)
 
