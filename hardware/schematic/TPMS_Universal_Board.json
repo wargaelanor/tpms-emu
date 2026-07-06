@@ -1,0 +1,236 @@
+{
+  "head": {
+    "docType": "1",
+    "editorVersion": "6.5.22",
+    "x": "420",
+    "y": "297",
+    "c_para": {},
+    "title": "TPMS Universal Board",
+    "description": "Universal TPMS Sniffer/Emulator Board for ESP8266/ESP32-C3 with CC1101",
+    "company": "",
+    "revision": "1.0",
+    "author": ""
+  },
+  "canvas": "CA~0~0~420~297~white",
+  "shape": [
+    "T~10~10~12~l~r~0~0~TPMS Universal Board~sans-serif~0~normal",
+    "T~10~22~9~l~r~0~0~ESP8266/ESP32-C3 + CC1101 Sniffer/Emulator~sans-serif~0~normal",
+    "T~10~30~8~l~r~0~0~Version 1.0 - 2026-07-01~sans-serif~0~normal",
+
+    "LIB~20~40~TP4056 Module~TP4056 Module~1~1~0~~~#",
+    "T~10~65~8~l~r~0~0~Power Section~sans-serif~0~normal",
+
+    "LIB~20~80~Battery Holder 18650~Battery Holder 18650~1~1~0~~~#",
+    "T~10~100~8~l~r~0~0~Battery 18650~sans-serif~0~normal",
+
+    "LIB~80~40~AMS1117-3.3~AMS1117-3.3~1~1~0~~~#",
+    "T~70~65~8~l~r~0~0~3.3V LDO~sans-serif~0~normal",
+
+    "LIB~140~40~SPDT Switch~SPDT Switch~1~1~0~~~#",
+    "T~130~65~8~l~r~0~0~Power Switch~sans-serif~0~normal",
+
+    "LIB~80~100~C1 100nF~Capacitor~1~1~0~~~#",
+    "LIB~80~120~C2 10uF~Capacitor~1~1~0~~~#",
+    "LIB~100~100~C3 100nF~Capacitor~1~1~0~~~#",
+    "LIB~100~120~C4 100nF~Capacitor~1~1~0~~~#",
+
+    "T~200~10~12~l~r~0~0~ESP Section (Dual Footprint)~sans-serif~0~normal",
+
+    "LIB~200~40~ESP8266 D1 Mini~ESP8266 D1 Mini~1~1~0~~~#",
+    "T~190~65~8~l~r~0~0~ESP8266 D1 Mini~sans-serif~0~normal",
+
+    "LIB~200~120~ESP32-C3 Mini~ESP32-C3 Mini~1~1~0~~~#",
+    "T~190~145~8~l~r~0~0~ESP32-C3 Mini~sans-serif~0~normal",
+
+    "T~320~10~12~l~r~0~0~CC1101 Section~sans-serif~0~normal",
+
+    "LIB~320~40~CC1101 Module~CC1101 Module~1~1~0~~~#",
+    "T~310~65~8~l~r~0~0~CC1101 315MHz Module~sans-serif~0~normal",
+
+    "T~20~150~12~l~r~0~0~Control Section~sans-serif~0~normal",
+
+    "LIB~20~160~Q1 2N7002~N-MOSFET~1~1~0~~~#",
+    "T~10~185~8~l~r~0~0~CC1101 Power Switch~sans-serif~0~normal",
+
+    "LIB~20~200~R_gate 1k~Resistor~1~1~0~~~#",
+    "LIB~20~220~R_rst 10k~Resistor~1~1~0~~~#",
+    "LIB~20~240~Reset Button~Push Button~1~1~0~~~#",
+
+    "LIB~80~160~JP1 Board Select~Jumper~1~1~0~~~#",
+    "LIB~80~180~JP2 Deep Sleep~Jumper~1~1~0~~~#",
+    "LIB~80~200~JP3 CC1101 Power~Jumper~1~1~0~~~#",
+    "LIB~80~220~JP4 ADC Select~Jumper~1~1~0~~~#",
+
+    "T~140~150~12~l~r~0~0~Voltage Divider~sans-serif~0~normal",
+
+    "LIB~140~160~R1 10k~Resistor~1~1~0~~~#",
+    "LIB~140~180~R2 10k~Resistor~1~1~0~~~#",
+    "LIB~140~200~C5 100nF~Capacitor~1~1~0~~~#",
+
+    "T~200~150~12~l~r~0~0~LED Indicators~sans-serif~0~normal",
+
+    "LIB~200~160~Green LED~LED~1~1~0~~~#",
+    "LIB~200~180~Red LED~LED~1~1~0~~~#",
+    "LIB~200~200~Blue LED~LED~1~1~0~~~#",
+    "LIB~220~160~R_LED1 1k~Resistor~1~1~0~~~#",
+    "LIB~220~180~R_LED2 1k~Resistor~1~1~0~~~#",
+    "LIB~220~200~R_LED3 1k~Resistor~1~1~0~~~#",
+
+    "W~30~40~30~80",
+    "W~30~80~30~100",
+    "W~30~100~50~100",
+    "W~50~100~50~40",
+    "W~50~40~70~40",
+    "W~70~40~70~50",
+    "W~110~40~130~40",
+    "W~130~40~130~50",
+
+    "W~200~40~200~100",
+    "W~200~100~200~120",
+    "W~200~120~200~180",
+
+    "W~240~40~240~100",
+    "W~240~100~240~120",
+    "W~240~120~240~180",
+
+    "W~260~40~260~100",
+    "W~260~100~260~120",
+    "W~260~120~260~180",
+
+    "W~280~40~280~100",
+    "W~280~100~280~120",
+    "W~280~120~280~180",
+
+    "W~320~40~320~100",
+    "W~320~100~320~120",
+    "W~320~120~320~180",
+
+    "W~340~40~340~100",
+    "W~340~100~340~120",
+    "W~340~120~340~180",
+
+    "W~220~80~220~100",
+    "W~220~100~220~120",
+    "W~220~120~220~140",
+
+    "W~250~80~250~100",
+    "W~250~100~250~120",
+    "W~250~120~250~140",
+
+    "W~270~80~270~100",
+    "W~270~100~270~120",
+    "W~270~120~270~140",
+
+    "W~290~80~290~100",
+    "W~290~100~290~120",
+    "W~290~120~290~140",
+
+    "W~310~80~310~100",
+    "W~310~100~310~120",
+    "W~310~120~310~140",
+
+    "W~330~80~330~100",
+    "W~330~100~330~120",
+    "W~330~120~330~140",
+
+    "W~350~80~350~100",
+    "W~350~100~350~120",
+    "W~350~120~350~140",
+
+    "W~370~80~370~100",
+    "W~370~100~370~120",
+    "W~370~120~370~140",
+
+    "N~140~40~RST~0",
+    "N~160~40~VCC_3V3~0",
+    "N~180~40~GND~0",
+    "N~200~40~ADC_BAT~0",
+
+    "N~260~40~SPI_MOSI~0",
+    "N~280~40~SPI_MISO~0",
+    "N~300~40~SPI_CLK~0",
+    "N~320~40~SPI_CS~0",
+
+    "N~200~160~GDO0~0",
+    "N~200~180~GDO2~0",
+
+    "N~260~120~SPI_MOSI~0",
+    "N~280~120~SPI_MISO~0",
+    "N~300~120~SPI_CLK~0",
+    "N~320~120~SPI_CS~0",
+
+    "N~320~160~GDO0~0",
+    "N~340~160~GDO2~0",
+
+    "N~260~160~CC1101_VCC~0",
+    "N~280~160~GND~0",
+    "N~300~160~SPI_MOSI~0",
+    "N~320~160~SPI_MISO~0",
+    "N~340~160~SPI_CLK~0",
+    "N~360~160~SPI_CS~0",
+
+    "N~120~160~VCC_SYS~0",
+    "N~120~180~ADC_BAT~0",
+    "N~120~200~GND~0",
+
+    "N~140~160~VCC_3V3~0",
+    "N~140~180~VCC_3V3~0",
+
+    "N~200~200~DEEP_SLEEP~0",
+
+    "T~10~260~8~l~r~0~0~Connection Summary:~sans-serif~0~normal",
+    "T~10~270~7~l~r~0~0~1. Battery+ → TP4056 B+~sans-serif~0~normal",
+    "T~10~278~7~l~r~0~0~2. Battery- → TP4056 B-~sans-serif~0~normal",
+    "T~10~286~7~l~r~0~0~3. TP4056 OUT+ → SPDT COM~sans-serif~0~normal",
+    "T~150~260~7~l~r~0~0~4. SPDT NO → AMS1117 VIN~sans-serif~0~normal",
+    "T~150~268~7~l~r~0~0~5. AMS1117 VOUT → VCC_3V3~sans-serif~0~normal",
+    "T~150~276~7~l~r~0~0~6. ESP 3V3 → VCC_3V3~sans-serif~0~normal",
+    "T~150~284~7~l~r~0~0~7. ESP GND → GND~sans-serif~0~normal",
+    "T~300~260~7~l~r~0~0~8. ESP D7 (GPIO13) → SPI_MOSI → CC1101 SI~sans-serif~0~normal",
+    "T~300~268~7~l~r~0~0~9. ESP D6 (GPIO12) → SPI_MISO → CC1101 SO~sans-serif~0~normal",
+    "T~300~276~7~l~r~0~0~10. ESP D5 (GPIO14) → SPI_CLK → CC1101 CLK~sans-serif~0~normal",
+    "T~300~284~7~l~r~0~0~11. ESP D8 (GPIO15) → SPI_CS → CC1101 CSN~sans-serif~0~normal",
+    "T~300~292~7~l~r~0~0~12. ESP D1 (GPIO5) → GDO0 → CC1101 GDO0~sans-serif~0~normal",
+
+    "T~10~296~7~l~r~0~0~13. ESP D2 (GPIO4) → GDO2 → CC1101 GDO2~sans-serif~0~normal",
+    "T~150~296~7~l~r~0~0~14. ESP D4 (GPIO2) → R_gate → Q1 Gate~sans-serif~0~normal",
+    "T~300~296~7~l~r~0~0~15. Q1 Source → GND, Q1 Drain → CC1101 VCC~sans-serif~0~normal",
+
+    "T~10~306~7~l~r~0~0~16. VCC_SYS → R1 → ADC_BAT → R2 → GND~sans-serif~0~normal",
+    "T~150~306~7~l~r~0~0~17. ADC_BAT → ESP A0~sans-serif~0~normal",
+    "T~300~306~7~l~r~0~0~18. ESP D0 (GPIO16) → JP2 → RST~sans-serif~0~normal",
+    "T~10~314~7~l~r~0~0~19. RST → R_rst → VCC_3V3~sans-serif~0~normal",
+    "T~150~314~7~l~r~0~0~20. RST → Reset button → GND~sans-serif~0~normal",
+    "T~300~314~7~l~r~0~0~21. VCC_3V3 → Green LED → R → GND~sans-serif~0~normal",
+    "T~10~322~7~l~r~0~0~22. VCC_BAT → Red LED → R → GND~sans-serif~0~normal",
+    "T~150~322~7~l~r~0~0~23. ESP D3 (GPIO0) → R → Blue LED → GND~sans-serif~0~normal",
+
+    "T~10~332~8~l~r~0~0~Net Labels: VCC_BAT, VCC_SYS, VCC_3V3, GND, CC1101_VCC~sans-serif~0~normal",
+    "T~10~340~8~l~r~0~0~SPI_MOSI, SPI_MISO, SPI_CLK, SPI_CS, GDO0, GDO2~sans-serif~0~normal",
+    "T~10~348~8~l~r~0~0~ADC_BAT, DEEP_SLEEP, RST~sans-serif~0~normal"
+  ],
+  "BBox": {
+    "x": 0,
+    "y": 0,
+    "width": 420,
+    "height": 360
+  },
+  "colors": [
+    "#000000",
+    "#FF0000",
+    "#00FF00",
+    "#0000FF",
+    "#FFFF00",
+    "#FF00FF",
+    "#00FFFF",
+    "#808080",
+    "#C0C0C0",
+    "#800000",
+    "#008000",
+    "#000080",
+    "#808000",
+    "#800080",
+    "#008080",
+    "#FFFFFF"
+  ]
+}

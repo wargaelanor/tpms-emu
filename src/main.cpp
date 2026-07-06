@@ -73,7 +73,7 @@
 #define PIN_CC1101_CS      15  // D8  - CC1101 CSN
 #define PIN_CC1101_GDO0    5   // D1  - CC1101 GDO0
 #define PIN_CC1101_GDO2    4   // D2  - CC1101 GDO2
-#define PIN_CC1101_POWER   2   // D4  - N-MOSFET gate
+#define PIN_CC1101_POWER   2   // D4  - N-MOSFET gate (2N7002) — low-side switch
 #undef PIN_SPI_MOSI
 #undef PIN_SPI_MISO
 #undef PIN_SPI_SCK
@@ -1057,7 +1057,6 @@ void sniffer_loop() {
     static uint8_t acc_buf[256];
     static uint16_t acc_len = 0;
     static bool rxRunning = false;
-    static uint32_t lastDiag = 0;
 
     uint32_t now = millis();
 
@@ -1098,21 +1097,6 @@ void sniffer_loop() {
     // Step 3: Try decode whenever we have enough data
     if (acc_len >= 10) {
         int8_t rssi = cc1101.getRssi();
-        // Diagnostic: print RSSI and FIFO bytes every 5s even if no decode
-        if (now - lastDiag >= 5000) {
-            lastDiag = now;
-            uint8_t marc = cc1101.getMarcState();
-            uint8_t fifo = cc1101.getRxBytes() & 0x7F;
-            Serial.printf("[DIAG-LOOP] RSSI=%d MARC=0x%02x FIFO=%d acc_len=%d\n", rssi, marc, fifo, acc_len);
-            // Dump first 32 bytes of accumulator for analysis
-            if (acc_len >= 32) {
-                Serial.print("[HEX] ");
-                for (uint8_t i = 0; i < 32 && i < acc_len; i++) {
-                    Serial.printf("%02X ", acc_buf[i]);
-                }
-                Serial.println();
-            }
-        }
         if (rssi > -95) {
             uint32_t id = 0;
             uint8_t pressure = 0;
@@ -1173,6 +1157,9 @@ void sniffer_loop() {
         sniffer_stop();
     }
 
+#if defined(ESP8266)
+    yield();  // feed WiFi/software watchdog on ESP8266
+#endif
 }
 
 // ============================================================================
@@ -1228,7 +1215,7 @@ void init_config() {
     config.tx_enabled = 1;  // auto-TX ON by default
     config.freq = 0;        // 315 MHz default
     memset(config.reserved, 0, 3);
-    config.autoTxInterval = 5;   // 5 sec default for testing
+    config.autoTxInterval = 300;  // 5 min default (300 sec)
     config.autoTxPackets = 2;     // 2 packets per sensor (v6 optimized)
     config.reserved2 = 0;
     config.battMah = BATT_DEFAULT_MAH;
@@ -1366,10 +1353,10 @@ void setup() {
     load_config();
     Serial.println("[SETUP] Config loaded");
 
-    // Force auto-TX ON
+    // Force auto-TX ON (use EEPROM value, not hardcoded)
     autoTxEnabled = true;
     config.tx_enabled = 1;
-    autoTxInterval = 5;
+    if (autoTxInterval < 3) autoTxInterval = 3;  // minimum 3 seconds
 
     // Power on and init CC1101
     cc1101_power_on();
@@ -1464,6 +1451,9 @@ void loop() {
         // Still run sniffer even without WiFi
         sniffer_loop();
         delay(1);
+#if defined(ESP8266)
+        yield();
+#endif
         return;
     }
 
@@ -1471,9 +1461,9 @@ void loop() {
     server.handleClient();
     wsServer.loop();
 
-    // Debug: print connected clients count every 5 seconds
+    // Debug: print connected clients count every 60 seconds
     static uint32_t lastDebugPrint = 0;
-    if (millis() - lastDebugPrint > 5000) {
+    if (millis() - lastDebugPrint > 60000) {
         lastDebugPrint = millis();
         Serial.printf("[LOOP] WiFi clients: %d, WS clients: %d\n",
                       WiFi.softAPgetStationNum(), wsClients);
@@ -1511,7 +1501,6 @@ void loop() {
         char cmd = Serial.read();
         if (cmd == 'n') {
             // Start sniffer via serial
-#if !defined(ESP8266)
             if (!snifferActive) {
                 Serial.println("[CMD] Starting sniffer...");
                 sniffer_start();
@@ -1519,7 +1508,6 @@ void loop() {
                 Serial.println("[CMD] Sniffer already active, stopping...");
                 sniffer_stop();
             }
-#endif
         } else if (cmd == 's') {
             // Wide frequency sweep to detect crystal mismatch
             Serial.println("[CMD] Wide frequency sweep...");
@@ -2000,8 +1988,14 @@ function handleMsg(m){
   if(m.t==='log')logMsg(m.m);
   else if(m.t==='status')applyStatus(m.data);
   else if(m.t==='pkt'){
-    logMsg('pkt #'+m.s+' ID:'+m.id+' P:'+m.p+'kPa T:'+m.t+'C cnt:'+m.c,'ok');
-    loadStatus(1);
+    logMsg('pkt #'+m.s+' ID:'+m.id+' P:'+m.p+'kPa T:'+m.tmp+'C cnt:'+m.c,'ok');
+    $('snifferCard').style.display='block';
+    var el=$('sniffResults');
+    var cur=el.innerHTML;
+    if(cur.indexOf(m.id)<0){
+      if(cur.indexOf('&#1057;')===0||cur==='')el.innerHTML='';
+      el.innerHTML+='ID:'+m.id+' P:'+m.p+'kPa T:'+m.tmp+'C<br>';
+    }
   }
 }
 
@@ -2065,30 +2059,19 @@ function applyStatus(d){
     $('battWrap').className='batt '+cls;
     $('battFill').style.width=b.pct+'%';
     $('battText').textContent=b.mv+'mV ('+b.pct+'%)';
+    window._battMah=b.mah||3000;
+    calcBattery();
   }
   if(d.sniffer){
     $('snifferCard').style.display='block';
-    var html='';
     if(d.sniffer.active){
       $('sniffStartBtn').disabled=true;
       $('sniffStopBtn').disabled=false;
-      html+='&#1057;&#1083;&#1091;&#1096;&#1072;&#1102;...<br>';
     }else{
       $('sniffStartBtn').disabled=false;
       $('sniffStopBtn').disabled=true;
     }
-    if(d.sniffer.sensors){
-      d.sniffer.sensors.forEach(function(s){
-        if(s.id){
-          html+='ID:'+s.id+' P:'+s.p+'kPa T:'+s.t+'C<br>';
-        }
-      });
-    }
-    if(d.sniffer.count>0){
-      $('sniffApplyBtn').disabled=false;
-      html+='<br>&#1053;&#1072;&#1081;&#1076;&#1077;&#1085;&#1086;: '+d.sniffer.count+' &#1076;&#1072;&#1090;&#1095;&#1080;&#1082;&#1086;&#1074;';
-    }
-    $('sniffResults').innerHTML=html;
+    if(d.sniffer.count>0)$('sniffApplyBtn').disabled=false;
   }
 }
 
@@ -2248,13 +2231,13 @@ function applyFreq(){
 function calcBattery(){
   var interval=+$('atInterval').value||300;
   var packets=+$('atPackets').value||2;
-  /* 600mAh battery, 7uA sleep, 50mA burst */
-  var burstSec=packets*1.0; /* 4 sensors × ~250ms per packet */
+  var mah=window._battMah||3000;
+  var burstSec=packets*1.0;
   var duty=burstSec/interval;
   var avg=0.007+(50-0.007)*duty;
-  var hours=600/avg;
+  var hours=mah/avg;
   var days=hours/24;
-  var s='~'+days.toFixed(0)+' дн (~'+hours.toFixed(0)+' ч) при 600 мА·ч';
+  var s='~'+days.toFixed(0)+' дн (~'+hours.toFixed(0)+' ч) при '+mah+' мА·ч';
   $('batteryEst').textContent=s;
 }
 
@@ -2395,7 +2378,7 @@ void wsSendPacketDecode(uint8_t sensorIdx, uint32_t id, uint8_t pByte, uint8_t t
     json += idBuf;
     json += "\",\"p\":";
     json += String((uint16_t)((pByte - PMV107J_PRESSURE_OFFSET) * PMV107J_PRESSURE_KPA_SCALE));
-    json += ",\"t\":";
+    json += ",\"tmp\":";
     json += String((int8_t)(tByte - PMV107J_TEMP_OFFSET));
     json += ",\"c\":";
     json += String(cnt);
@@ -2602,9 +2585,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
                     }
                 }
             } else if (cmd == "sniff_start") {
-#if !defined(ESP8266)
                 sniffer_start();
-#endif
                 wsBroadcastStatus();
             } else if (cmd == "sniff_stop") {
                 sniffer_stop();
@@ -2849,9 +2830,7 @@ void handleApiCmd() {
             }
         }
     } else if (cmd == "sniff_start") {
-#if !defined(ESP8266)
         sniffer_start();
-#endif
     } else if (cmd == "sniff_stop") {
         sniffer_stop();
     } else if (cmd == "sniff_apply") {

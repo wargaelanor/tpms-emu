@@ -1,4 +1,4 @@
-﻿==============================================================================
+==============================================================================
   TPMS Sniffer/Emulator — CC1101 Pinout Reference
   Updated: 01.07.2026 — added battery voltage divider
 ==============================================================================
@@ -29,7 +29,7 @@
 
   ESP8266 Pin         →  CC1101 Pin       Function
   ─────────────────────────────────────────────────────────
-  D4 (GPIO2)          →  VCC via N-MOSFET  Power (via MOSFET gate)
+  D4 (GPIO2)          →  CC1101 GND via 2N7002  Power (low-side switch)
   GND                 →  Pin 2 (GND)      Ground
   D6 (GPIO12 / HSPI)  →  Pin 3 (SI/DIN)   SPI MOSI
   D7 (GPIO13 / HSPI)  →  Pin 4 (SO/DOUT)  SPI MISO
@@ -39,7 +39,10 @@
   D2 (GPIO4)          →  Pin 8 (GDO2)     GDO2
 
   NOTE: ESP8266 uses HSPI (software-wired), NOT native SPI.
-  NOTE: D4 (GPIO2) drives N-MOSFET gate to switch CC1101 VCC.
+  NOTE: D4 (GPIO2) drives N-MOSFET (2N7002) gate — low-side switch.
+  NOTE: CC1101 VCC always connected to VCC_3V3 (3.3V).
+  NOTE: When D4=HIGH → MOSFET ON → CC1101 GND connected → module ON.
+  NOTE: When D4=LOW → MOSFET OFF → CC1101 floating → module OFF.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Battery Voltage Divider (BOTH boards)
