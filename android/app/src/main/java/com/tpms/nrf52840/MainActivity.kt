@@ -52,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private var isNusReady = false
     private var pendingMessages = mutableListOf<String>()
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
+    private val rxBuffer = StringBuilder()
 
     private val sensorViews = mutableListOf<SensorViewHolder>()
 
@@ -252,6 +253,7 @@ class MainActivity : AppCompatActivity() {
         isConnected = false
         isNusReady = false
         pendingMessages.clear()
+        rxBuffer.clear()
         updateConnectionState()
     }
 
@@ -274,6 +276,7 @@ class MainActivity : AppCompatActivity() {
                 rxCharacteristic = null
                 isNusReady = false
                 pendingMessages.clear()
+                rxBuffer.clear()
                 runOnUiThread {
                     isConnected = false
                     updateConnectionState()
@@ -322,9 +325,19 @@ class MainActivity : AppCompatActivity() {
         override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
             super.onCharacteristicChanged(gatt, characteristic)
             if (characteristic?.uuid == NUS_TX_UUID) {
-                val value = characteristic.getStringValue(0)
-                Log.d(TAG, "RX: $value")
-                runOnUiThread { onNusData(value) }
+                val value = characteristic.getStringValue(0) ?: ""
+                Log.d(TAG, "RX fragment: $value")
+                rxBuffer.append(value)
+                var nlIndex = rxBuffer.indexOf("\n")
+                while (nlIndex >= 0) {
+                    val line = rxBuffer.substring(0, nlIndex)
+                    rxBuffer.delete(0, nlIndex + 1)
+                    if (line.isNotBlank()) {
+                        Log.d(TAG, "RX line: $line")
+                        runOnUiThread { onNusData(line) }
+                    }
+                    nlIndex = rxBuffer.indexOf("\n")
+                }
             }
         }
 
