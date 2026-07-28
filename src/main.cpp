@@ -6,16 +6,16 @@
  *
  * Protocol: PMV-107J (Pacific Industrial) on 315 MHz / 433 MHz
  *
- * Pinout (Adafruit Feather nRF52840 variant, compatible with bootloader):
- *   Custom SPI MISO -> D17 (P0.28)
- *   Custom SPI MOSI -> D20 (P0.29)
- *   Custom SPI SCK  -> D21 (P0.31)
- *   CC1101 CS        -> D10 (P0.27)
- *   CC1101 GDO0      -> D11 (P0.06)
- *   CC1101 GDO2      -> D12 (P0.08)
- *   CC1101 POWER     -> D9  (P0.26)
- *   Status LED       -> D24 (P0.15)
- *   Battery ADC      -> A0  (P0.04)
+ * Pinout (ProMicro nRF52840 V1940 / Nice!Nano clone, Feather variant):
+ *   Custom SPI MISO -> D46 (P0.29, labeled "029" on board)
+ *   Custom SPI MOSI -> D48 (P0.31, labeled "031" on board)
+ *   Custom SPI SCK  -> D3  (P1.04, labeled "104" on board)
+ *   CC1101 CS       -> D25 (P0.06, labeled "006" on board)
+ *   CC1101 GDO0     -> D27 (P0.08, labeled "008" on board)
+ *   CC1101 GDO2     -> D10 (P1.13, labeled "113" on board)
+ *   CC1101 POWER    -> D8  (P1.11, labeled "111" on board)
+ *   Status LED      -> D12 (P1.15, labeled "115" on board)
+ *   Battery ADC     -> 2   (P0.02, labeled "002" on board, AIN0)
  *
  * NOTE: ProMicro nRF52840 V1940 may have different physical pin labels.
  * Adjust macros below to match your wiring.
@@ -34,14 +34,14 @@ using namespace Adafruit_LittleFS_Namespace;
 static const char *CONFIG_FILENAME = "/tpms_config.bin";
 
 // ============================================================================
-// Pin Definitions
+// Pin Definitions (ProMicro nRF52840 V1940 / Nice!Nano clone)
 // ============================================================================
-#define PIN_CC1101_CS      10
-#define PIN_CC1101_GDO0    11
-#define PIN_CC1101_GDO2    12
-#define PIN_CC1101_POWER   9
-#define PIN_LED_STATUS     24
-#define PIN_BATTERY_ADC    A0
+#define PIN_CC1101_CS      25   // D25 = P0.06 (labeled "006" on board)
+#define PIN_CC1101_GDO0    27   // D27 = P0.08 (labeled "008" on board)
+#define PIN_CC1101_GDO2    10   // D10 = P1.13 (labeled "113" on board)
+#define PIN_CC1101_POWER   8    // D8  = P1.11 (labeled "111" on board)
+#define PIN_LED_STATUS     12   // D12 = P1.15 (labeled "115" on board)
+#define PIN_BATTERY_ADC    2    // P0.02 = AIN0 (labeled "002" on board)
 
 // ============================================================================
 // Configuration Constants
