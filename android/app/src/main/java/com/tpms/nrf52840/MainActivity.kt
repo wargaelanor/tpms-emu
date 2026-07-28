@@ -365,7 +365,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendCommandInternal(payload: String) {
-        val msg = "{$payload}"
+        val msg = "{$payload}\n"
         val rx = rxCharacteristic
         if (rx == null || bluetoothGatt == null) {
             Log.w(TAG, "sendCommandInternal: not ready")
