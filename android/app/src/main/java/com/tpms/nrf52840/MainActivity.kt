@@ -49,7 +49,9 @@ class MainActivity : AppCompatActivity() {
     private var selectedDevice: BluetoothDevice? = null
     private var isConnected = false
     private var isAutoTx = false
+    private var isNusReady = false
     private var pendingMessages = mutableListOf<String>()
+    private var rxCharacteristic: BluetoothGattCharacteristic? = null
 
     private val sensorViews = mutableListOf<SensorViewHolder>()
 
@@ -159,17 +161,28 @@ class MainActivity : AppCompatActivity() {
         scanCallback?.let { scanner?.stopScan(it) }
         scanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult?) {
+                Log.d(TAG, "onScanResult: ${result?.device?.address} name=${result?.scanRecord?.deviceName}")
                 result?.device?.let { onDeviceFound(it, result.scanRecord?.deviceName) }
             }
 
             override fun onBatchScanResults(results: MutableList<ScanResult>?) {
+                Log.d(TAG, "onBatchScanResults: ${results?.size}")
                 results?.forEach { onDeviceFound(it.device, it.scanRecord?.deviceName) }
             }
+
+            override fun onScanFailed(errorCode: Int) {
+                Log.e(TAG, "onScanFailed: $errorCode")
+                runOnUiThread {
+                    log("Scan failed: $errorCode")
+                    binding.tvConnectionState.text = "Ошибка сканирования: $errorCode"
+                }
+            }
         }
+        Log.d(TAG, "startScan")
         scanner?.startScan(null, ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCallback)
 
-        handler.postDelayed({ stopScan() }, 5000)
+        handler.postDelayed({ stopScan() }, 10000)
     }
 
     private fun stopScan() {
@@ -190,6 +203,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showDevicePicker() {
+        // Add bonded devices as fallback if scan found nothing
+        if (foundDevices.isEmpty()) {
+            val bonded = bluetoothAdapter?.bondedDevices ?: emptySet()
+            bonded.filter {
+                val n = it.name ?: ""
+                n.contains("TPMS", true) || n.contains("NRF", true)
+            }.forEach { foundDevices.add(it) }
+        }
         val items = foundDevices.map { "${it.name ?: "Unknown"} (${it.address})" }.toTypedArray()
         if (items.isEmpty()) {
             binding.tvConnectionState.text = "Устройства не найдены"
@@ -227,7 +248,10 @@ class MainActivity : AppCompatActivity() {
         ) return
         bluetoothGatt?.close()
         bluetoothGatt = null
+        rxCharacteristic = null
         isConnected = false
+        isNusReady = false
+        pendingMessages.clear()
         updateConnectionState()
     }
 
@@ -247,6 +271,9 @@ class MainActivity : AppCompatActivity() {
                     gatt?.discoverServices()
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                rxCharacteristic = null
+                isNusReady = false
+                pendingMessages.clear()
                 runOnUiThread {
                     isConnected = false
                     updateConnectionState()
@@ -257,21 +284,38 @@ class MainActivity : AppCompatActivity() {
 
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
             super.onServicesDiscovered(gatt, status)
-            if (status != BluetoothGatt.GATT_SUCCESS) return
-            val service = gatt?.getService(NUS_SERVICE_UUID) ?: return
-            val txChar = service.getCharacteristic(NUS_TX_UUID) ?: return
-            val rxChar = service.getCharacteristic(NUS_RX_UUID) ?: return
+            Log.d(TAG, "onServicesDiscovered status=$status")
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                runOnUiThread { log("Ошибка обнаружения сервисов: $status") }
+                return
+            }
+            val service = gatt?.getService(NUS_SERVICE_UUID)
+            if (service == null) {
+                runOnUiThread { log("NUS сервис не найден") }
+                return
+            }
+            val txChar = service.getCharacteristic(NUS_TX_UUID)
+            val rxChar = service.getCharacteristic(NUS_RX_UUID)
+            if (txChar == null || rxChar == null) {
+                runOnUiThread { log("NUS характеристики не найдены") }
+                return
+            }
+            rxCharacteristic = rxChar
+            Log.d(TAG, "tx props=${txChar.properties} rx props=${rxChar.properties}")
 
             gatt.setCharacteristicNotification(txChar, true)
             val descriptor = txChar.getDescriptor(CCCD_UUID)
-            descriptor?.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            gatt.writeDescriptor(descriptor)
+            if (descriptor != null) {
+                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                gatt.writeDescriptor(descriptor)
+            } else {
+                onNusReady()
+            }
 
             runOnUiThread {
                 isConnected = true
                 updateConnectionState()
                 log("NUS сервис найден")
-                sendCommand("\"cmd\":\"status\"")
             }
         }
 
@@ -279,36 +323,81 @@ class MainActivity : AppCompatActivity() {
             super.onCharacteristicChanged(gatt, characteristic)
             if (characteristic?.uuid == NUS_TX_UUID) {
                 val value = characteristic.getStringValue(0)
+                Log.d(TAG, "RX: $value")
                 runOnUiThread { onNusData(value) }
             }
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt?, descriptor: BluetoothGattDescriptor?, status: Int) {
             super.onDescriptorWrite(gatt, descriptor, status)
-            // Ready for TX
+            Log.d(TAG, "onDescriptorWrite status=$status")
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                onNusReady()
+            } else {
+                runOnUiThread { log("Ошибка включения уведомлений: $status") }
+            }
+        }
+
+        override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
+            super.onCharacteristicWrite(gatt, characteristic, status)
+            Log.d(TAG, "onCharacteristicWrite status=$status uuid=${characteristic?.uuid}")
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                runOnUiThread { log("Ошибка записи: $status") }
+            } else {
+                sendNextPending()
+            }
         }
     }
 
-    private fun sendCommand(payload: String) {
+    private fun onNusReady() {
+        isNusReady = true
+        runOnUiThread { log("NUS готов к передаче") }
+        sendCommand("\"cmd\":\"status\"")
+        // drain pending messages if any
+        while (pendingMessages.isNotEmpty()) {
+            sendCommand(pendingMessages.removeAt(0).removeSurrounding("{", "}"))
+        }
+    }
+
+    private fun sendNextPending() {
+        val next = pendingMessages.removeAt(0)
+        sendCommandInternal(next)
+    }
+
+    private fun sendCommandInternal(payload: String) {
         val msg = "{$payload}"
+        val rx = rxCharacteristic
+        if (rx == null || bluetoothGatt == null) {
+            Log.w(TAG, "sendCommandInternal: not ready")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "sendCommandInternal: no BLUETOOTH_CONNECT permission")
+            return
+        }
+        rx.value = msg.toByteArray(Charsets.UTF_8)
+        val ok = bluetoothGatt?.writeCharacteristic(rx) ?: false
+        Log.d(TAG, "TX: $msg ok=$ok")
+        runOnUiThread { log("→ $msg") }
+    }
+
+    private fun sendCommand(payload: String) {
         if (!isConnected || bluetoothGatt == null) {
             log("Не подключено")
             return
         }
-        lifecycleScope.launch(Dispatchers.IO) {
-            val service = bluetoothGatt?.getService(NUS_SERVICE_UUID)
-            val rxChar = service?.getCharacteristic(NUS_RX_UUID)
-            if (rxChar != null) {
-                rxChar.value = msg.toByteArray(Charsets.UTF_8)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                    ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    bluetoothGatt?.writeCharacteristic(rxChar)
-                } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                    bluetoothGatt?.writeCharacteristic(rxChar)
-                }
-            }
+        if (!isNusReady) {
+            pendingMessages.add(payload)
+            log("В очереди: $payload")
+            return
         }
+        if (pendingMessages.isNotEmpty()) {
+            pendingMessages.add(payload)
+            return
+        }
+        sendCommandInternal(payload)
     }
 
     private fun onNusData(data: String) {
