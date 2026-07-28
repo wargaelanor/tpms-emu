@@ -1,0 +1,30 @@
+<resources>
+    <string name="app_name">TPMS nRF52840</string>
+    <string name="scan">Поиск</string>
+    <string name="connect">Подключить</string>
+    <string name="disconnect">Отключить</string>
+    <string name="status">Статус</string>
+    <string name="sensors">Датчики</string>
+    <string name="emulator">Эмулятор</string>
+    <string name="sniffer">Сниффер</string>
+    <string name="burst">Burst</string>
+    <string name="start">Старт</string>
+    <string name="stop">Стоп</string>
+    <string name="apply">Применить</string>
+    <string name="save">Сохранить</string>
+    <string name="license">Лицензия</string>
+    <string name="license_key">Ключ (8 hex)</string>
+    <string name="activate">Активировать</string>
+    <string name="auto_tx">Авто-передача</string>
+    <string name="interval">Интервал, сек</string>
+    <string name="packets">Пакетов/датчик</string>
+    <string name="freq">Частота</string>
+    <string name="mhz">МГц</string>
+    <string name="pressure">Давление, кПа</string>
+    <string name="temperature">Температура, °C</string>
+    <string name="sensor_id">ID датчика</string>
+    <string name="enabled">Вкл</string>
+    <string name="log">Лог</string>
+    <string name="battery">Батарея</string>
+    <string name="device_not_connected">Устройство не подключено</string>
+</resources>

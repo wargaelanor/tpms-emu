@@ -1,0 +1,24 @@
+# PlatformIO
+.pio/
+.vscode/
+*.uf2
+*.hex
+*.bin
+*.elf
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Android
+android/.gradle/
+android/app/build/
+android/*.iml
+android/local.properties
+android/.idea/
+*.apk
+
+# OS
+.DS_Store
+Thumbs.db
