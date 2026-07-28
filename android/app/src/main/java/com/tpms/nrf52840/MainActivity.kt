@@ -68,6 +68,26 @@ class MainActivity : AppCompatActivity() {
         initSensorsUi()
         initButtons()
         checkPermissions()
+        tryAutoConnect()
+    }
+
+    private fun tryAutoConnect() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val bonded = bluetoothAdapter?.bondedDevices ?: emptySet()
+        val device = bonded.firstOrNull {
+            val n = it.name ?: ""
+            n.contains("TPMS", true) || n.contains("NRF", true)
+        }
+        if (device != null) {
+            Log.d(TAG, "Auto-connect to bonded ${device.name} ${device.address}")
+            log("Автоподключение к ${device.name}...")
+            selectedDevice = device
+            connect(device)
+        } else {
+            Log.d(TAG, "No bonded TPMS device found")
+        }
     }
 
     private fun initSensorsUi() {
@@ -536,8 +556,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_PERMISSIONS && grantResults.any { it != PackageManager.PERMISSION_GRANTED }) {
-            Toast.makeText(this, "Без разрешений Bluetooth работать не будет", Toast.LENGTH_LONG).show()
+        if (requestCode == REQUEST_PERMISSIONS) {
+            if (grantResults.any { it != PackageManager.PERMISSION_GRANTED }) {
+                Toast.makeText(this, "Без разрешений Bluetooth работать не будет", Toast.LENGTH_LONG).show()
+            } else {
+                tryAutoConnect()
+            }
         }
     }
 
