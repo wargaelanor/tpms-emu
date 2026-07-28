@@ -272,6 +272,10 @@ static long jsonGetLong(const String &json, const char *key);
 void uartSendLog(const String &msg);
 void uartBroadcastStatus();
 
+// Deferred command processing from BLE callback to main loop
+static String bleCommandBuffer;
+static volatile bool bleCommandReady = false;
+
 // Bit helpers
 static inline void set_bit(uint8_t *buf, uint16_t pos, bool val) {
     uint16_t byte_idx = pos / 8;
@@ -946,16 +950,20 @@ static String buildStatusJson() {
 }
 
 static void uartPrint(const String &msg) {
-    // Send message in chunks to avoid Bluefruit BLEUart FIFO truncation
+    // Send message in chunks and yield to BLE stack to avoid FIFO loss
     const size_t chunkSize = 20;
     const char *data = msg.c_str();
     size_t len = msg.length();
     size_t sent = 0;
     while (sent < len) {
         size_t n = min(chunkSize, len - sent);
-        bleUart.write((const uint8_t *)(data + sent), n);
-        sent += n;
-        bleUart.flush();
+        size_t written = bleUart.write((const uint8_t *)(data + sent), n);
+        if (written == 0) {
+            delay(1);
+            continue;
+        }
+        sent += written;
+        delay(1);
     }
 }
 
@@ -1108,18 +1116,18 @@ void processCommand(const String &msg) {
         uartSendLog("[CMD] Unknown: " + cmd);
     }
 }
-
 void bleuart_rx_callback(uint16_t conn_handle) {
     (void)conn_handle;
+
     while (bleUart.available()) {
-        static String line = "";
         char c = bleUart.read();
         if (c == '\n') {
-            line.trim();
-            if (line.length() > 0) processCommand(line);
-            line = "";
-        } else if (line.length() < 512) {
-            line += c;
+            bleCommandBuffer.trim();
+            if (bleCommandBuffer.length() > 0) {
+                bleCommandReady = true;
+            }
+        } else if (bleCommandBuffer.length() < 512) {
+            bleCommandBuffer += c;
         }
     }
 }
@@ -1179,6 +1187,14 @@ void setup() {
 void loop() {
     sniffer_loop();
     runAutoTx();
+
+    // Process deferred BLE command outside interrupt context
+    if (bleCommandReady) {
+        bleCommandReady = false;
+        String cmd = bleCommandBuffer;
+        bleCommandBuffer = "";
+        processCommand(cmd);
+    }
 
     // LED blink heartbeat
     static uint32_t lastLed = 0;
