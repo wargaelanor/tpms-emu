@@ -262,15 +262,15 @@ class MainActivity : AppCompatActivity() {
             super.onConnectionStateChange(gatt, status, newState)
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 runOnUiThread {
-                    binding.tvConnectionState.text = "Подключено, поиск сервисов..."
+                    binding.tvConnectionState.text = "Подключено, согласование MTU..."
                     log("BLE подключен")
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                     ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
                 ) {
-                    gatt?.discoverServices()
+                    gatt?.requestMtu(517)
                 } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                    gatt?.discoverServices()
+                    gatt?.requestMtu(517)
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 rxCharacteristic = null
@@ -282,6 +282,18 @@ class MainActivity : AppCompatActivity() {
                     updateConnectionState()
                     log("BLE отключен")
                 }
+            }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            super.onMtuChanged(gatt, mtu, status)
+            Log.d(TAG, "onMtuChanged mtu=$mtu status=$status")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+            ) {
+                gatt?.discoverServices()
+            } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                gatt?.discoverServices()
             }
         }
 
@@ -325,8 +337,9 @@ class MainActivity : AppCompatActivity() {
         override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
             super.onCharacteristicChanged(gatt, characteristic)
             if (characteristic?.uuid == NUS_TX_UUID) {
-                val value = characteristic.getStringValue(0) ?: ""
-                Log.d(TAG, "RX fragment: $value")
+                val bytes = characteristic.value ?: byteArrayOf()
+                val value = String(bytes, Charsets.UTF_8)
+                Log.d(TAG, "RX fragment (${bytes.size}): $value")
                 rxBuffer.append(value)
                 var nlIndex = rxBuffer.indexOf("\n")
                 while (nlIndex >= 0) {
