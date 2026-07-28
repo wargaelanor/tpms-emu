@@ -945,6 +945,20 @@ static String buildStatusJson() {
     return json;
 }
 
+static void uartPrint(const String &msg) {
+    // Send message in chunks to avoid Bluefruit BLEUart FIFO truncation
+    const size_t chunkSize = 20;
+    const char *data = msg.c_str();
+    size_t len = msg.length();
+    size_t sent = 0;
+    while (sent < len) {
+        size_t n = min(chunkSize, len - sent);
+        bleUart.write((const uint8_t *)(data + sent), n);
+        sent += n;
+        bleUart.flush();
+    }
+}
+
 void uartSendLog(const String &msg) {
     String json = "{\"t\":\"log\",\"m\":\"";
     String escaped = msg;
@@ -953,14 +967,14 @@ void uartSendLog(const String &msg) {
     escaped.replace("\n", "\\n");
     json += escaped;
     json += "\"}";
-    bleUart.print(json);
-    bleUart.print("\n");
+    uartPrint(json);
+    uartPrint("\n");
 }
 
 void uartBroadcastStatus() {
     String json = buildStatusJson();
-    bleUart.print(json);
-    bleUart.print("\n");
+    uartPrint(json);
+    uartPrint("\n");
 }
 
 // ============================================================================
