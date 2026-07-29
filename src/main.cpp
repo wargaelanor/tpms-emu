@@ -1,1255 +1,1167 @@
-/**
- * TPMS Emulator / Sniffer for ProMicro nRF52840 V1940 (Nice!Nano clone)
- *
- * Based on TPMS-Emulator v7.3 (ESP32-C3 / ESP8266).
- * Replaces WiFi/Web UI with BLE UART + Android app.
- *
- * Protocol: PMV-107J (Pacific Industrial) on 315 MHz / 433 MHz
- *
- * Pinout (ProMicro nRF52840 V1940 / Nice!Nano clone, Feather variant):
- *   Custom SPI MISO -> D29 (P0.17, labeled "017" on board)
- *   Custom SPI MOSI -> D20 (P0.29, labeled "029" on board)
- *   Custom SPI SCK  -> D21 (P0.31, labeled "031" on board)
- *   CC1101 CS       -> D2  (P0.10, labeled "010" on board)
- *   CC1101 GDO0     -> D11 (P0.06, labeled "006" on board)
- *   CC1101 GDO2     -> D12 (P0.08, labeled "008" on board)
- *   CC1101 POWER    -> D28 (P0.20, labeled "020" on board)
- *   Status LED      -> D24 (P0.15, onboard LED)
- *   Battery ADC     -> A4  (P0.02, labeled "002" on board, AIN4)
- *
- * NOTE: ProMicro nRF52840 V1940 may have different physical pin labels.
- * Adjust macros below to match your wiring.
+/*
+ * TPMS Emulator/Sniffer Firmware for nRF52840 + CC1101
+ * Протокол PMV-107J (Pacific Industrial) для Acura RDX 2008
+ * BLE UART интерфейс для Android приложения
+ * 
+ * Board: ProMicro nRF52840 V1940 (Nice!Nano Feather-совместимый клон)
+ * CC1101: 315/433 МГц, 2-FSK, Differential Manchester Encoding
  */
 
 #include <Arduino.h>
 #include <SPI.h>
-#include <string.h>
 #include <bluefruit.h>
 #include <Adafruit_LittleFS.h>
-#include <InternalFileSystem.h>
+#include <InternalFS.h>
+
 #include "CC1101.h"
 
 using namespace Adafruit_LittleFS_Namespace;
 
-// ============================================================================
-// Pin Definitions (ProMicro nRF52840 V1940 / Nice!Nano clone)
-// ============================================================================
-#define PIN_CC1101_CS      2    // D2  = P0.10 (labeled "010" on board)
-#define PIN_CC1101_GDO0    11   // D11 = P0.06 (labeled "006" on board)
-#define PIN_CC1101_GDO2    12   // D12 = P0.08 (labeled "008" on board)
-#define PIN_CC1101_POWER   28   // D28 = P0.20 (labeled "020" on board)
-#define PIN_LED_STATUS     24   // D24 = P0.15 (onboard LED)
-#define PIN_BATTERY_ADC    A4   // D18 = P0.02 (labeled "002" on board, AIN4)
+// =========================================================================
+// Pin Mapping - ProMicro nRF52840 V1940
+// ВСЕ пины должны быть согласованы во ВСЕХ файлах проекта!
+// =========================================================================
+#define PIN_SPI_MISO    29    // Arduino pin 29 = P0.17 (board label "017")
+#define PIN_SPI_MOSI    20    // Arduino pin 20 = P0.29 (board label "029")
+#define PIN_SPI_SCK     21    // Arduino pin 21 = P0.31 (board label "031")
+#define PIN_CC1101_CS   2     // Arduino pin 2  = P0.10 (board label "010")
+#define PIN_CC1101_GDO0 11    // Arduino pin 11 = P0.06 (board label "006")
+#define PIN_CC1101_GDO2 12    // Arduino pin 12 = P0.08 (board label "008")
+#define PIN_CC1101_PWR  28    // Arduino pin 28 = P0.20 (board label "020")
+#define PIN_STATUS_LED  24    // Arduino pin 24 = P0.15 (onboard LED)
+#define PIN_BATTERY_ADC 18    // Arduino pin 18 = P0.02 (board label "002"), AIN4
 
-// ============================================================================
-// Configuration Constants
-// ============================================================================
-#define TPMS_FREQ_315            315.0f
-#define TPMS_FREQ_433            433.92f
-#define TPMS_FREQ_DEFAULT        TPMS_FREQ_315
-#define TPMS_DEFAULT_DATARATE    10000
-#define TPMS_DEFAULT_DEVIATION   38.0f
-#define TPMS_DEFAULT_POWER       5
-#define TPMS_TX_INTERVAL_MS      200
-#define TPMS_POWER_MIN           1
-#define TPMS_POWER_MAX           7
-#define TPMS_BURST_COUNT         5
-#define TPMS_MAX_TX_INTERVAL     900
-#define TPMS_NUM_SENSORS         4
-#define EEPROM_MAGIC             0xB0
+// =========================================================================
+// Конфигурация по умолчанию
+// =========================================================================
+#define CONFIG_MAGIC         0xB0
+#define CONFIG_FILENAME      "tpms_cfg"
+#define MAX_SENSORS          4
+#define MAX_PAYLOAD_BITS     72     // 66 бит payload + preamble
+#define DEFAULT_FREQ_315     315
+#define DEFAULT_FREQ_433     433
+#define DEFAULT_DATARATE     10000  // 10 kbaud
+#define DEFAULT_DEVIATION    38000  // 38 kHz
+#define DEFAULT_POWER        0x1E   // ~10 dBm
+#define DEFAULT_INTERVAL     300    // секунд между burst
+#define DEFAULT_PACKETS      2      // пакетов за burst
+#define TRIAL_SECONDS        86400  // 24 часа
+#define BLE_CHUNK_SIZE       20     // макс. байт за BLE пакет
+#define CMD_BUFFER_SIZE      512
 
-#define BATT_FULL_MV             4200
-#define BATT_LOW_MV              3300
-#define BATT_CRITICAL_MV         3000
-#define BATT_DEFAULT_MAH         3000
+// =========================================================================
+// Структуры данных (с packed для совместимости хранилища)
+// =========================================================================
 
-// ============================================================================
-// EEPROM Layout
-// ============================================================================
-#define EE_MAGIC       0
-#define EE_DATARATE    1
-#define EE_DEVIATION   5
-#define EE_POWER       7
-#define EE_MANCH_EN    8
-#define EE_TX_ENABLED  9
-#define EE_TX_INTERVAL 10
-#define EE_TX_PACKETS  12
-#define EE_FREQ        13
-#define EE_SENSORS     14
-#define EE_LICENSE     42
-#define EE_TRIAL_SEC   43
-#define EE_BATT_MAH    47
-#define EE_TOTAL       49
-
-static uint8_t ee_buf[EE_TOTAL];
-
-static uint32_t ee_read32(int off) {
-    return ((uint32_t)ee_buf[off] | ((uint32_t)ee_buf[off+1]<<8) |
-            ((uint32_t)ee_buf[off+2]<<16) | ((uint32_t)ee_buf[off+3]<<24));
-}
-static void ee_write32(int off, uint32_t v) {
-    ee_buf[off]=v; ee_buf[off+1]=v>>8; ee_buf[off+2]=v>>16; ee_buf[off+3]=v>>24;
-}
-static uint16_t ee_read16(int off) {
-    return ((uint16_t)ee_buf[off] | ((uint16_t)ee_buf[off+1]<<8));
-}
-static void ee_write16(int off, uint16_t v) {
-    ee_buf[off]=v; ee_buf[off+1]=v>>8;
-}
-
-static void eeprom_load() {
-    memset(ee_buf, 0xFF, EE_TOTAL);
-    File f = InternalFS.open("tpms_cfg", FILE_O_READ);
-    if (f) {
-        f.read(ee_buf, EE_TOTAL);
-        f.close();
-    }
-}
-
-static void eeprom_commit() {
-    InternalFS.remove("tpms_cfg");
-    File f = InternalFS.open("tpms_cfg", FILE_O_WRITE);
-    if (f) {
-        f.seek(0);
-        f.write(ee_buf, EE_TOTAL);
-        f.truncate();
-        f.close();
-    }
-}
-
-// ============================================================================
-// BLE Objects
-// ============================================================================
-BLEUart bleUart;
-
-// ============================================================================
-// License System (simplified — accept any 8-char HEX key)
-// ============================================================================
-static bool is_licensed() {
-    return ee_buf[EE_LICENSE] == 0xFF;
-}
-
-static uint32_t trial_unwritten = 0;
-
-static uint32_t get_trial_seconds() {
-    uint32_t v = ee_read32(EE_TRIAL_SEC);
-    uint32_t base = (v == 0xFFFFFFFF) ? 0 : v;
-    uint32_t total = base + trial_unwritten;
-    return total > 86400 ? 86400 : total;
-}
-
-static void flush_trial() {
-    if (trial_unwritten == 0) return;
-    uint32_t base = ee_read32(EE_TRIAL_SEC);
-    base = (base == 0xFFFFFFFF) ? 0 : base;
-    uint32_t total = base + trial_unwritten;
-    if (total > 86400) total = 86400;
-    ee_write32(EE_TRIAL_SEC, total);
-    eeprom_commit();
-    trial_unwritten = 0;
-}
-
-static void add_trial_seconds(uint32_t s) {
-    trial_unwritten += s;
-    uint32_t total = get_trial_seconds();
-    if (trial_unwritten >= 60 || total >= 86400) {
-        flush_trial();
-    }
-}
-
-static bool is_trial_expired() {
-    return get_trial_seconds() >= 86400;
-}
-
-static bool can_sniff() {
-    return is_licensed() || !is_trial_expired();
-}
-
-// ============================================================================
-// PMV-107J Protocol Defines
-// ============================================================================
-#define PMV107J_PAYLOAD_BITS     58
-#define PMV107J_TOTAL_BITS       66
-#define PMV107J_PRESSURE_OFFSET  40
-#define PMV107J_PRESSURE_KPA_SCALE 2.48f
-#define PMV107J_TEMP_OFFSET      40
-#define PMV107J_SETTLE_BITS      16
-#define PMV107J_PREAMBLE_BITS    6
-#define PMV107J_TRAILER_BITS     6
-
-// ============================================================================
-// Data Structures
-// ============================================================================
-struct SensorConfig {
-    uint32_t sensor_id;
-    uint8_t  pressure_kpa;
-    int8_t   temperature_c;
-    uint8_t  battery_ok;
-    uint8_t  flags;
-} __attribute__((packed));
-
-struct SystemConfig {
-    uint8_t  magic;
-    uint32_t datarate;
-    uint16_t deviation;
-    uint8_t  power;
-    uint8_t  manchester_en;
-    uint8_t  tx_enabled;
-    uint8_t  freq;
-    uint8_t  reserved[3];
-    uint16_t autoTxInterval;
-    uint8_t  autoTxPackets;
-    uint8_t  reserved2;
-    SensorConfig sensors[TPMS_NUM_SENSORS];
-    uint16_t battMah;
-} __attribute__((packed));
-
-// ============================================================================
-// Globals
-// ============================================================================
-CC1101 cc1101(PIN_CC1101_CS, PIN_CC1101_GDO0, PIN_CC1101_GDO2);
-SystemConfig config;
-
-bool     autoTxEnabled = true;
-uint16_t autoTxInterval = 60;
-uint8_t  autoTxPackets = 2;
-uint32_t autoTxLastMs = 0;
-bool     autoTxRunning = false;
-
-bool     snifferActive = false;
-uint32_t snifferStartMs = 0;
-uint32_t sniffer_discovery_ms = 0;
-
-#define  SNIFFER_TIMEOUT_MS 3600000
-#define  SNIFFER_MAX_SENSORS 4
-
-struct SnifferResult {
-    uint32_t sensor_id;
-    uint8_t  pressure_kpa;
-    int8_t   temperature_c;
-    uint8_t  battery_ok;
-    uint32_t last_seen_ms;
-    bool     valid;
-} sniffer_sensors[SNIFFER_MAX_SENSORS];
-uint8_t sniffer_count = 0;
-
-uint32_t last_tx_time = 0;
-uint8_t  tx_counter = 0;
-uint8_t  burst_count = 0;
-
-const uint32_t DEFAULT_SENSOR_IDS[TPMS_NUM_SENSORS] = {
-    0x00298088, 0x0466E088, 0x0D784088, 0x0C765088
+// Конфигурация одного датчика (7 байт)
+struct __attribute__((packed)) SensorConfig {
+    uint32_t id;           // 28-bit ID
+    uint16_t pressure;     // давление в кПа * 10 (2300 = 230.0 кПа = ~33 psi)
+    int8_t   temperature;  // температура в градусах Цельсия
+    uint8_t  flags;        // enabled(bit0), counter(bits 1-2)
 };
 
-const char* SENSOR_LABELS[TPMS_NUM_SENSORS] = { "PL", "PP", "ZL", "ZP" };
+// Полная конфигурация (49 байт)
+struct __attribute__((packed)) TPMSConfig {
+    uint8_t     magic;          // 0xB0
+    uint32_t    datarate;       // скорость в бод
+    uint16_t    deviation;      // девиация в Гц / 100
+    uint8_t     power;          // PA index
+    uint8_t     manch_en;       // Manchester encoding enabled
+    uint8_t     tx_enabled;     // авто-TX включён
+    uint16_t    tx_interval;    // интервал авто-TX (сек)
+    uint8_t     tx_packets;     // пакетов за burst
+    uint8_t     freq;           // 315 или 433
+    SensorConfig sensors[MAX_SENSORS]; // 4 * 7 = 28 байт
+    uint8_t     license_key[4]; // 4 байта лицензии (упрощённо)
+    uint32_t    trial_start;    // начало триала (unix timestamp)
+    uint16_t    batt_mah;       // ёмкость батареи мАч
+};
 
-static char dbg_last_id[96] = "";
+// Данные обнаруженного датчика (для сниффера)
+struct DiscoveredSensor {
+    uint32_t id;
+    uint16_t pressure;
+    int8_t   temperature;
+    uint8_t  counter;
+    uint8_t  bat_flag;
+    int8_t   rssi;
+    bool     valid;
+};
 
-// Function prototypes
-void init_config();
-void load_config();
-void save_config();
-void init_cc1101();
-void cc1101_send_raw(const uint8_t *data, uint8_t len);
-void send_pmv107j_sensor(uint8_t sensor_idx);
-bool set_cc1101_data_rate(uint32_t baud);
-bool set_cc1101_deviation(float khz);
-void set_cc1101_power(int8_t pa_index);
-void set_cc1101_manchester(bool enable);
-void sniffer_start();
-void sniffer_stop();
-void sniffer_loop();
-bool sniffer_decode_packet(const uint8_t *raw, uint8_t len, uint32_t *id, uint8_t *pressure, int8_t *temp);
-uint16_t dm_decode(const uint8_t *dm_bits, uint16_t dm_len, uint8_t *out_bits);
-uint8_t calculate_crc8_pmv(const uint8_t *data, uint8_t len);
-void cc1101_power_on();
-void cc1101_power_off();
-void send_burst_all();
-void runAutoTx();
-static String buildStatusJson();
-void bleuart_rx_callback(uint16_t conn_handle);
-void processCommand(const String &msg);
-static String jsonGetString(const String &json, const char *key);
-static long jsonGetLong(const String &json, const char *key);
-void uartSendLog(const String &msg);
-void uartBroadcastStatus();
+// =========================================================================
+// Глобальные объекты
+// =========================================================================
+static CC1101 radio(PIN_CC1101_CS, PIN_CC1101_GDO0, PIN_CC1101_GDO2);
+static TPMSConfig cfg;
+static DiscoveredSensor discovered[MAX_SENSORS];
+static File file(InternalFS);
 
-// Deferred command processing from BLE callback to main loop
-static String bleCommandBuffer;
-static volatile bool bleCommandReady = false;
+// BLE
+static BLEDis  bledis;
+static BLEUart bleuart;
 
+// Буфер команд
+static char cmdBuf[CMD_BUFFER_SIZE];
+static uint16_t cmdBufLen = 0;
 
+// Состояние
+static bool snifferActive = false;
+static uint32_t lastAutoTx = 0;
+static uint32_t trialStartTime = 0;
+static uint32_t licenseValid = 0; // 0 = no license, 1 = trial, 2 = full
 
-// Bit helpers
-static inline void set_bit(uint8_t *buf, uint16_t pos, bool val) {
-    uint16_t byte_idx = pos / 8;
-    uint8_t bit_idx = 7 - (pos % 8);
-    if (val) buf[byte_idx] |= (1 << bit_idx);
+// =========================================================================
+// Битовые хелперы
+// =========================================================================
+static inline void set_bit(uint8_t *arr, uint16_t bit, uint8_t val) {
+    uint16_t idx = bit >> 3;
+    uint8_t  mask = 1 << (7 - (bit & 7));
+    if (val) arr[idx] |= mask; else arr[idx] &= ~mask;
 }
-static inline bool get_bit(const uint8_t *buf, uint16_t pos) {
-    uint16_t byte_idx = pos / 8;
-    uint8_t bit_idx = 7 - (pos % 8);
-    return (buf[byte_idx] >> bit_idx) & 1;
+
+static inline uint8_t get_bit(const uint8_t *arr, uint16_t bit) {
+    uint16_t idx = bit >> 3;
+    return (arr[idx] >> (7 - (bit & 7))) & 1;
 }
 
-// CRC-8
-uint8_t calculate_crc8_pmv(const uint8_t *data, uint8_t len) {
+// =========================================================================
+// Battery monitoring
+// =========================================================================
+static uint16_t readBatteryMv() {
+    analogReadResolution(12);
+    int adc = analogRead(A4);  // PIN_BATTERY_ADC = 18 = A4
+    // Делитель 1:2, Vref = 3.3V, 12-bit ADC
+    // Vbat = adc * 2 * 3300 / 4096
+    uint32_t mv = (uint32_t)adc * 6600UL / 4096UL;
+    return (uint16_t)mv;
+}
+
+static uint8_t getBatteryPercent() {
+    uint16_t mv = readBatteryMv();
+    // Линейная интерполяция: 3000mV = 0%, 4200mV = 100%
+    if (mv <= 3000) return 0;
+    if (mv >= 4200) return 100;
+    return (uint8_t)((mv - 3000) * 100 / 1200);
+}
+
+static bool isBatteryLow() {
+    return readBatteryMv() < 3300;
+}
+
+static bool isBatteryCritical() {
+    return readBatteryMv() < 3100;
+}
+
+// =========================================================================
+// CC1101 Power Control
+// =========================================================================
+static void cc1101PowerOn() {
+    pinMode(PIN_CC1101_PWR, OUTPUT);
+    digitalWrite(PIN_CC1101_PWR, HIGH);
+    delay(10);  // ждём стабилизации питания CC1101
+}
+
+static void cc1101PowerOff() {
+    pinMode(PIN_CC1101_PWR, OUTPUT);
+    digitalWrite(PIN_CC1101_PWR, LOW);
+}
+
+// =========================================================================
+// BLE helpers - chunked write для избежания FIFO overflow
+// =========================================================================
+static void bleSendChunked(const char *str) {
+    uint16_t len = strlen(str);
+    uint16_t offset = 0;
+    while (offset < len) {
+        uint8_t chunk = (len - offset > BLE_CHUNK_SIZE) ? BLE_CHUNK_SIZE : (len - offset);
+        bleuart.write((uint8_t *)(str + offset), chunk);
+        offset += chunk;
+        // Небольшая пауза между чанками
+        if (offset < len) delay(5);
+    }
+    bleuart.write((uint8_t *)"\n", 1);
+}
+
+static void sendLog(const char *msg) {
+    char buf[280];
+    snprintf(buf, sizeof(buf), "{\"t\":\"log\",\"m\":\"%s\"}", msg);
+    bleSendChunked(buf);
+}
+
+// =========================================================================
+// CRC-8 для PMV-107J: полином 0x13, init 0x00
+// =========================================================================
+static uint8_t calculate_crc8_pmv(const uint8_t *bits, uint16_t bitLen) {
     uint8_t crc = 0x00;
-    for (uint8_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (uint8_t j = 0; j < 8; j++) {
-            if (crc & 0x80) crc = (crc << 1) ^ 0x13;
-            else crc = crc << 1;
-        }
+    // Обрабатываем первые 58 бит (до поля CRC)
+    uint16_t crcBits = (bitLen > 58) ? 58 : bitLen;
+
+    for (uint16_t i = 0; i < crcBits; i++) {
+        uint8_t bit = get_bit(bits, i);
+        uint8_t fb = crc ^ bit;
+        crc >>= 1;
+        if (fb & 1) crc ^= 0x8C;  // реверс полинома 0x13 -> 0x8C
     }
     return crc;
 }
 
-// ============================================================================
-// Battery
-// ============================================================================
-uint16_t readBatteryMv() {
-    int raw = analogRead(PIN_BATTERY_ADC);
-    // nRF52840 has 12-bit ADC (0-4095), default 3.3V reference
-    // With 1:2 divider: Vbat = raw * 3.3V / 4095 * 2 * 1000
-    return (uint16_t)((uint32_t)raw * 3300UL * 2 / 4095);
+// =========================================================================
+// PMV-107J: построение 66-битного payload
+// Структура payload (66 бит):
+//   [0:27]   - ID (28 бит, LSB first)
+//   [28]     - флаг батареи (0=OK, 1=low)
+//   [29:30]  - счётчик (2 бита)
+//   [31:32]  - флаги (2 бита, обычно 0b11)
+//   [33:43]  - давление (11 бит, инвертированное)
+//   [44:54]  - давление (11 бит, прямое) = инверсия предыдущего
+//   [55:57]  - температура (3 бита, XOR 0b111)
+//   [58:65]  - CRC-8 (8 бит)
+// =========================================================================
+static uint16_t build_pmv107j_payload(uint8_t *outBits, uint32_t sensorId,
+                                       uint16_t pressure, int8_t temperature,
+                                       uint8_t counter, uint8_t batFlag) {
+    // Очищаем массив
+    uint16_t totalBits = 16 + 6 + 66; // preamble(16) + sync(6) + payload(66) = 88 бит
+    // Но мы строим только payload (66 бит), preamble+sync добавляются отдельно
+    uint16_t payloadBits = 66;
+    uint16_t arrLen = (payloadBits + 7) / 8;
+    memset(outBits, 0, arrLen);
+
+    // Давление: PMV-107J использует кодировку давления
+    // Давление в кПа * 10 (2300 = 230.0 кПа ≈ 33.4 psi)
+    // Кодирование: val = 1800 - pressure_kpa10 (инвертированное)
+    // Прямое: pressure_kpa10
+    uint16_t presEncoded = pressure;
+    if (presEncoded < 500) presEncoded = 500;
+    if (presEncoded > 3500) presEncoded = 3500;
+
+    // Инвертированное давление
+    uint16_t presInv = 4095 - presEncoded;
+
+    // Температура: кодирование 3 бит
+    // -40°C=0, -30°C=1, ... +30°C=7, +40°C=7
+    int8_t tempEnc = (temperature + 40) / 10;
+    if (tempEnc < 0) tempEnc = 0;
+    if (tempEnc > 7) tempEnc = 7;
+    uint8_t tempXor = tempEnc ^ 0x07;
+
+    // ID: 28 бит, LSB first
+    for (int i = 0; i < 28; i++) {
+        set_bit(outBits, i, (sensorId >> i) & 1);
+    }
+
+    // Флаг батареи (bit 28)
+    set_bit(outBits, 28, batFlag);
+
+    // Счётчик (bits 29-30)
+    set_bit(outBits, 29, (counter >> 0) & 1);
+    set_bit(outBits, 30, (counter >> 1) & 1);
+
+    // Флаги (bits 31-32), обычно 0b11
+    set_bit(outBits, 31, 1);
+    set_bit(outBits, 32, 1);
+
+    // Давление инвертированное (bits 33-43), 11 бит, LSB first
+    for (int i = 0; i < 11; i++) {
+        set_bit(outBits, 33 + i, (presInv >> i) & 1);
+    }
+
+    // Давление прямое (bits 44-54), 11 бит, LSB first
+    for (int i = 0; i < 11; i++) {
+        set_bit(outBits, 44 + i, (presEncoded >> i) & 1);
+    }
+
+    // Температура XOR (bits 55-57), 3 бита
+    set_bit(outBits, 55, (tempXor >> 0) & 1);
+    set_bit(outBits, 56, (tempXor >> 1) & 1);
+    set_bit(outBits, 57, (tempXor >> 2) & 1);
+
+    // CRC-8 (bits 58-65)
+    uint8_t crc = calculate_crc8_pmv(outBits, 58);
+    for (int i = 0; i < 8; i++) {
+        set_bit(outBits, 58 + i, (crc >> i) & 1);
+    }
+
+    return payloadBits;
 }
 
-uint8_t getBatteryPercent() {
-    uint16_t mv = readBatteryMv();
-    if (mv >= BATT_FULL_MV) return 100;
-    if (mv <= BATT_CRITICAL_MV) return 0;
-    return (uint8_t)((mv - BATT_CRITICAL_MV) * 100 / (BATT_FULL_MV - BATT_CRITICAL_MV));
-}
+// =========================================================================
+// Differential Manchester Encoding
+// Правило: бит 0 = переход, бит 1 = без перехода
+// Первый символ всегда = 1 (начало preamble)
+// =========================================================================
+static uint16_t differential_manchester_encode(const uint8_t *inBits, uint16_t inLen,
+                                                uint8_t *outBits) {
+    // DM encoding удваивает длину: каждый бит → 2 бита
+    uint16_t outLen = inLen * 2;
+    uint16_t arrLen = (outLen + 7) / 8;
+    memset(outBits, 0, arrLen);
 
-bool isBatteryLow() { return readBatteryMv() < BATT_LOW_MV; }
-bool isBatteryCritical() { return readBatteryMv() < BATT_CRITICAL_MV; }
+    // Начальное состояние: предыдущий символ = 1
+    uint8_t prevLevel = 1;
+    uint16_t outIdx = 0;
 
-// ============================================================================
-// CC1101 Power Control
-// ============================================================================
-void cc1101_power_on() {
-    digitalWrite(PIN_CC1101_POWER, HIGH);
-    delay(2);
-}
+    for (uint16_t i = 0; i < inLen; i++) {
+        uint8_t bit = get_bit(inBits, i);
 
-void cc1101_power_off() {
-    cc1101.setIdleState();
-    delay(1);
-    digitalWrite(PIN_CC1101_CS, HIGH);
-    SPI.end();
-    pinMode(PIN_CC1101_CS, OUTPUT);
-    digitalWrite(PIN_CC1101_CS, HIGH);
-    digitalWrite(PIN_CC1101_POWER, LOW);
-}
-
-// ============================================================================
-// CC1101 Init
-// ============================================================================
-void init_cc1101() {
-    cc1101.init();
-    cc1101.setFreq((config.freq == 1) ? TPMS_FREQ_433 : TPMS_FREQ_315);
-    cc1101.setFreqConfig((config.freq == 1) ? TPMS_FREQ_433 : TPMS_FREQ_315);
-    cc1101.setModulation(0);
-    set_cc1101_data_rate(config.datarate);
-    set_cc1101_deviation(config.deviation / 10.0f);
-    set_cc1101_manchester(0);
-    config.manchester_en = 0;
-    set_cc1101_power(config.power);
-    cc1101.setSyncMode(0);
-    cc1101.writeReg(CC1101_PKTCTRL0, 0x00);
-    cc1101.writeReg(CC1101_PKTCTRL1, 0x00);
-}
-
-bool set_cc1101_data_rate(uint32_t baud) {
-    if (baud < 600 || baud > 500000) return false;
-    cc1101.setMHZOsc(26.0f);
-    bool result = cc1101.setDRate(baud);
-    if (result) config.datarate = baud;
-    return result;
-}
-
-bool set_cc1101_deviation(float khz) {
-    if (khz < 1.58f || khz > 380.0f) return false;
-    bool result = cc1101.setDeviation(khz);
-    if (result) config.deviation = (uint16_t)(khz * 10);
-    return result;
-}
-
-void set_cc1101_power(int8_t pa_index) {
-    pa_index = constrain(pa_index, TPMS_POWER_MIN, TPMS_POWER_MAX);
-    cc1101.setPA(pa_index);
-    config.power = pa_index;
-}
-
-void set_cc1101_manchester(bool enable) {
-    cc1101.setManc(enable ? 1 : 0);
-    config.manchester_en = enable ? 1 : 0;
-}
-
-// ============================================================================
-// PMV-107J Encoder
-// ============================================================================
-uint16_t build_pmv107j_payload(uint8_t sensor_idx, uint8_t *bit_buf) {
-    if (sensor_idx >= TPMS_NUM_SENSORS) return 0;
-    SensorConfig *s = &config.sensors[sensor_idx];
-    memset(bit_buf, 0, 16);
-    uint16_t pos = 0;
-
-    uint32_t id = s->sensor_id;
-    for (int8_t i = 27; i >= 0; i--) set_bit(bit_buf, pos++, (id >> i) & 1);
-    set_bit(bit_buf, pos++, 0);
-
-    uint8_t cnt = (tx_counter % 3) + 1;
-    set_bit(bit_buf, pos++, (cnt >> 1) & 1);
-    set_bit(bit_buf, pos++, cnt & 1);
-
-    set_bit(bit_buf, pos++, 0);
-    set_bit(bit_buf, pos++, 0);
-    set_bit(bit_buf, pos++, 0);
-
-    uint8_t pressure_byte = (uint8_t)((float)s->pressure_kpa / PMV107J_PRESSURE_KPA_SCALE + PMV107J_PRESSURE_OFFSET);
-    for (int8_t i = 7; i >= 0; i--) set_bit(bit_buf, pos++, (pressure_byte >> i) & 1);
-
-    uint8_t inv_pressure = pressure_byte ^ 0xFF;
-    for (int8_t i = 7; i >= 0; i--) set_bit(bit_buf, pos++, (inv_pressure >> i) & 1);
-
-    uint8_t temp_byte = (uint8_t)(s->temperature_c + PMV107J_TEMP_OFFSET);
-    for (int8_t i = 7; i >= 0; i--) set_bit(bit_buf, pos++, (temp_byte >> i) & 1);
-
-    uint8_t crc_buf[8];
-    memset(crc_buf, 0, 8);
-    for (uint16_t i = 0; i < 58; i++) set_bit(crc_buf, 6 + i, get_bit(bit_buf, i));
-    uint8_t crc = calculate_crc8_pmv(crc_buf, 8);
-
-    for (int8_t i = 7; i >= 0; i--) set_bit(bit_buf, pos++, (crc >> i) & 1);
-
-    tx_counter = (tx_counter + 1) & 0xFF;
-    return pos;
-}
-
-uint16_t differential_manchester_encode(const uint8_t *data_bits, uint16_t num_bits, uint8_t *out_buf) {
-    memset(out_buf, 0, 40);
-    uint16_t out_pos = 0;
-    uint8_t state = 0;
-    for (uint16_t i = 0; i < num_bits; i++) {
-        bool bit = get_bit(data_bits, i);
-        bool same = (bit == state);
-        if (same) {
-            set_bit(out_buf, out_pos++, 1);
-            set_bit(out_buf, out_pos++, 0);
-            state = 0;
+        if (bit == 0) {
+            // Бит 0: переход в середине
+            set_bit(outBits, outIdx++, prevLevel);
+            prevLevel = prevLevel ? 0 : 1;  // переход
+            set_bit(outBits, outIdx++, prevLevel);
         } else {
-            set_bit(out_buf, out_pos++, 0);
-            set_bit(out_buf, out_pos++, 1);
-            state = 1;
+            // Бит 1: без перехода
+            set_bit(outBits, outIdx++, prevLevel);
+            set_bit(outBits, outIdx++, prevLevel);
         }
     }
-    return out_pos;
+
+    return outIdx;
 }
 
-void cc1101_send_raw(const uint8_t *data, uint8_t len) {
-    cc1101.setIdleState();
-    delay(1);
-    cc1101.sendCommand(CC1101_SCAL);
-    delay(3);
-    cc1101.writeReg(CC1101_PKTCTRL0, 0x00);
-    cc1101.writeReg(CC1101_PKTLEN, len);
-    cc1101.writeReg(CC1101_PKTCTRL1, 0x00);
-    cc1101.setManc(0);
-    cc1101.flushTxFifo();
-    delay(1);
-    cc1101.writeBurstReg(CC1101_TX_FIFO, data, len);
-    cc1101.setTxState();
-    delay(3);
-    uint8_t state = cc1101.getChipState();
-    if (state == 0x13) {
-        unsigned int packet_time_ms = (unsigned int)(len * 10 / 8) + 10;
-        delay(packet_time_ms);
+// =========================================================================
+// Построение полного пакета PMV-107J
+// Preamble: 16 нулей + "111110" (6 бит) + 66 бит payload
+// Всего: 88 бит → DM encode → 176 бит → 22 байта
+// =========================================================================
+static uint16_t build_pmv107j_packet(uint8_t *packet, uint32_t sensorId,
+                                      uint16_t pressure, int8_t temperature,
+                                      uint8_t counter, uint8_t batFlag) {
+    // Шаг 1: Строим preamble + sync + payload = 88 бит
+    uint8_t rawBits[24]; // 88 бит = 11 байт
+    memset(rawBits, 0, sizeof(rawBits));
+
+    // Preamble: 16 нулей (уже нули от memset)
+    // Sync: "111110" в позициях 16-21
+    uint8_t syncPat[] = {1, 1, 1, 1, 1, 0};
+    for (int i = 0; i < 6; i++) {
+        set_bit(rawBits, 16 + i, syncPat[i]);
     }
-    cc1101.setIdleState();
-    delay(1);
-    cc1101.flushTxFifo();
-}
 
-void send_pmv107j_sensor(uint8_t sensor_idx) {
-    if (sensor_idx >= TPMS_NUM_SENSORS) return;
-    uint8_t payload_bits[16];
-    uint16_t payload_len = build_pmv107j_payload(sensor_idx, payload_bits);
-    if (payload_len != PMV107J_TOTAL_BITS) return;
+    // Payload: 66 бит начиная с позиции 22
+    uint16_t payloadBits = build_pmv107j_payload(rawBits + 2,  // смещение на 16 бит = 2 байта
+                                                    sensorId, pressure, temperature,
+                                                    counter, batFlag);
+    // payloadBits = 66, позиция в rawBits = 22
+    // build_pmv107j_payload пишет в outBits начиная с бита 0
+    // Нам нужно сдвинуть на 22 бита
+    // Переписываем: сначала строим payload в отдельный массив
+    uint8_t payloadArr[16];
+    memset(payloadArr, 0, sizeof(payloadArr));
+    payloadBits = build_pmv107j_payload(payloadArr, sensorId, pressure,
+                                         temperature, counter, batFlag);
 
-    uint8_t dm_input[16];
-    memset(dm_input, 0, 16);
-    uint16_t dm_in_pos = 0;
-    set_bit(dm_input, dm_in_pos++, 1);
-    for (uint16_t i = 0; i < payload_len; i++) set_bit(dm_input, dm_in_pos++, get_bit(payload_bits, i));
-    set_bit(dm_input, dm_in_pos++, 1);
-
-    uint8_t dm_output[40];
-    uint16_t dm_out_len = differential_manchester_encode(dm_input, dm_in_pos, dm_output);
-
-    uint8_t tx_buf[30];
-    memset(tx_buf, 0, 30);
-    uint16_t tx_pos = 0;
-    tx_pos = PMV107J_SETTLE_BITS;
-    for (uint8_t i = 0; i < PMV107J_PREAMBLE_BITS; i++) {
-        if (i < 5) set_bit(tx_buf, tx_pos + i, 1);
+    // Копируем payload в rawBits начиная с бита 22
+    for (uint16_t i = 0; i < payloadBits; i++) {
+        set_bit(rawBits, 22 + i, get_bit(payloadArr, i));
     }
-    tx_pos += PMV107J_PREAMBLE_BITS;
-    for (uint16_t i = 0; i < dm_out_len; i++) set_bit(tx_buf, tx_pos + i, get_bit(dm_output, i));
-    tx_pos += dm_out_len;
-    tx_pos += PMV107J_TRAILER_BITS;
 
-    uint8_t tx_bytes = (tx_pos + 7) / 8;
-    cc1101_send_raw(tx_buf, tx_bytes);
-}
+    uint16_t totalBits = 22 + payloadBits; // 88 бит
 
-void send_burst_all() {
-    for (uint8_t s = 0; s < TPMS_NUM_SENSORS; s++) {
-        if (!(config.sensors[s].flags & 0x01)) continue;
-        for (uint8_t i = 0; i < autoTxPackets; i++) {
-            send_pmv107j_sensor(s);
-            if (i < autoTxPackets - 1) delay(TPMS_TX_INTERVAL_MS);
+    // Шаг 2: Differential Manchester Encoding
+    uint8_t dmBits[32]; // 176 бит = 22 байта
+    uint16_t dmLen = differential_manchester_encode(rawBits, totalBits, dmBits);
+
+    // Шаг 3: Конвертируем биты в байты
+    uint16_t byteLen = (dmLen + 7) / 8;
+    memset(packet, 0, byteLen + 1);
+    for (uint16_t i = 0; i < dmLen; i++) {
+        if (get_bit(dmBits, i)) {
+            packet[i / 8] |= (1 << (7 - (i % 8)));
         }
     }
+
+    return byteLen;
 }
 
-// ============================================================================
-// Sniffer Decode
-// ============================================================================
-uint16_t dm_decode(const uint8_t *dm_bits, uint16_t dm_len, uint8_t *out_bits) {
-    uint16_t out_pos = 0;
-    uint8_t prev_level = 0;
-    for (uint16_t i = 0; i < dm_len && out_pos < 128; i += 2) {
-        bool b1 = (dm_bits[i / 8] >> (7 - (i % 8))) & 1;
-        bool b2 = (dm_bits[(i + 1) / 8] >> (7 - ((i + 1) % 8))) & 1;
-        if (b1 == b2) continue;
-        if (b1 == prev_level) out_bits[out_pos / 8] |= (1 << (7 - (out_pos % 8)));
-        else out_bits[out_pos / 8] &= ~(1 << (7 - (out_pos % 8)));
-        out_pos++;
-        prev_level = b2;
+// =========================================================================
+// Отправка сырых данных через CC1101 (fixed-length TX)
+// =========================================================================
+static void cc1101_send_raw(const uint8_t *data, uint8_t len) {
+    radio.setIdleState();
+    radio.flushTxFifo();
+
+    // Устанавливаем длину пакета
+    radio.writeReg(CC1101_PKTLEN, len);
+
+    // Пишем данные в FIFO
+    radio.writeBurstReg(CC1101_TXFIFO, data, len);
+
+    // Старт TX
+    radio.sendCommand(CC1101_STX);
+
+    // Ждём окончания передачи
+    unsigned long start = millis();
+    while (millis() - start < 100) {
+        uint8_t state = radio.getMarcState();
+        if (state == CC1101_MARCSTATE_IDLE || state == 0x01) break;
+        delayMicroseconds(100);
     }
-    return out_pos;
+
+    radio.setIdleState();
 }
 
-bool sniffer_decode_packet(const uint8_t *raw, uint8_t len, uint32_t *id, uint8_t *pressure, int8_t *temp) {
-    if (len < 5) return false;
-    uint16_t preamble_end = 0;
-    bool found = false;
-    for (int16_t i = (int16_t)(len * 8) - 7; i >= 0; i--) {
-        uint8_t byte_idx = i / 8;
-        uint8_t bit_idx = 7 - (i % 8);
-        bool b0 = (raw[byte_idx] >> bit_idx) & 1;
-        bool b1 = (raw[(i + 1) / 8] >> (7 - ((i + 1) % 8))) & 1;
-        bool b2 = (raw[(i + 2) / 8] >> (7 - ((i + 2) % 8))) & 1;
-        bool b3 = (raw[(i + 3) / 8] >> (7 - ((i + 3) % 8))) & 1;
-        bool b4 = (raw[(i + 4) / 8] >> (7 - ((i + 4) % 8))) & 1;
-        bool b5 = (raw[(i + 5) / 8] >> (7 - ((i + 5) % 8))) & 1;
-        if (b0 && b1 && b2 && b3 && b4 && !b5) {
-            uint16_t bits_after = (len * 8) - (i + 6);
-            if (bits_after >= 136) {
-                preamble_end = i + 6;
-                found = true;
+// =========================================================================
+// Отправка пакета PMV-107J для одного датчика
+// =========================================================================
+static void send_pmv107j_sensor(uint8_t sensorIdx) {
+    if (sensorIdx >= MAX_SENSORS) return;
+    if (!(cfg.sensors[sensorIdx].flags & 0x01)) return; // disabled
+
+    SensorConfig *s = &cfg.sensors[sensorIdx];
+    uint8_t counter = (s->flags >> 1) & 0x03;
+    uint8_t batFlag = isBatteryLow() ? 1 : 0;
+
+    uint8_t packet[32];
+    uint8_t pktLen = build_pmv107j_packet(packet, s->id, s->pressure,
+                                            s->temperature, counter, batFlag);
+
+    // Отправляем пакет
+    cc1101_send_raw(packet, pktLen);
+
+    // Инкрементируем счётчик
+    counter = (counter + 1) & 0x03;
+    s->flags = (s->flags & 0xF9) | (counter << 1);
+
+    // Посылаем информацию о пакете в BLE
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "{\"t\":\"pkt\",\"s\":%d,\"id\":\"%06X\",\"p\":%d,\"tmp\":%d,\"c\":%d,\"crc\":\"OK\"}",
+             sensorIdx, (unsigned)s->id, (unsigned)s->pressure, (int)s->temperature, counter);
+    bleSendChunked(buf);
+}
+
+// =========================================================================
+// Burst: отправка всех включённых датчиков
+// =========================================================================
+static void sendBurst() {
+    sendLog("Burst start");
+    for (uint8_t i = 0; i < MAX_SENSORS; i++) {
+        if (cfg.sensors[i].flags & 0x01) {
+            send_pmv107j_sensor(i);
+            delay(50);  // пауза между датчиками
+        }
+    }
+    sendLog("Burst done");
+}
+
+// =========================================================================
+// Differential Manchester Decode (для сниффера)
+// =========================================================================
+static int16_t dm_decode(const uint8_t *inBits, uint16_t inLen, uint8_t *outBits) {
+    // DM decode: каждые 2 бита → 1 бит
+    // 0: переход, 1: без перехода
+    uint16_t outLen = inLen / 2;
+    memset(outBits, 0, (outLen + 7) / 8);
+
+    uint8_t prevLevel = 1;
+    uint16_t outIdx = 0;
+
+    for (uint16_t i = 0; i + 1 < inLen; i += 2) {
+        uint8_t a = get_bit(inBits, i);
+        uint8_t b = get_bit(inBits, i + 1);
+
+        if (a != b) {
+            // Переход → бит 0
+            set_bit(outBits, outIdx++, 0);
+            prevLevel = b;
+        } else {
+            // Без перехода → бит 1
+            set_bit(outBits, outIdx++, 1);
+            prevLevel = a;
+        }
+    }
+
+    return outIdx;
+}
+
+// =========================================================================
+// Декодер пакетов PMV-107J (сниффер)
+// =========================================================================
+static bool sniffer_decode_packet(const uint8_t *data, uint8_t len,
+                                   DiscoveredSensor *result) {
+    // Конвертируем байты в биты
+    uint16_t totalBits = len * 8;
+    uint8_t *rawBits = (uint8_t *)malloc((totalBits + 7) / 8);
+    if (!rawBits) return false;
+    memcpy(rawBits, data, len);
+
+    // DM decode
+    uint8_t *dmBits = (uint8_t *)malloc((totalBits / 2 + 7) / 8);
+    if (!dmBits) { free(rawBits); return false; }
+
+    int16_t decodedLen = dm_decode(rawBits, totalBits, dmBits);
+    free(rawBits);
+
+    if (decodedLen < 88) {  // минимум preamble(16) + sync(6) + payload(66) = 88
+        free(dmBits);
+        return false;
+    }
+
+    // Ищем preamble: 16 нулей + "111110"
+    int syncPos = -1;
+    for (int i = 0; i <= decodedLen - 22; i++) {
+        // Проверяем 16 нулей
+        bool preambleOk = true;
+        for (int j = 0; j < 16 && (i + j) < decodedLen; j++) {
+            if (get_bit(dmBits, i + j) != 0) { preambleOk = false; break; }
+        }
+        if (!preambleOk) continue;
+
+        // Проверяем sync "111110"
+        uint8_t syncCheck[] = {1, 1, 1, 1, 1, 0};
+        bool syncOk = true;
+        for (int j = 0; j < 6 && (i + 16 + j) < decodedLen; j++) {
+            if (get_bit(dmBits, i + 16 + j) != syncCheck[j]) { syncOk = false; break; }
+        }
+        if (syncOk) { syncPos = i; break; }
+    }
+
+    if (syncPos < 0) { free(dmBits); return false; }
+
+    // Извлекаем payload начиная с позиции syncPos + 22
+    uint16_t payloadStart = syncPos + 22;
+    if (payloadStart + 66 > decodedLen) { free(dmBits); return false; }
+
+    // ID: 28 бит, LSB first
+    uint32_t id = 0;
+    for (int i = 0; i < 28; i++) {
+        if (get_bit(dmBits, payloadStart + i)) {
+            id |= (1UL << i);
+        }
+    }
+
+    // Battery flag
+    uint8_t batFlag = get_bit(dmBits, payloadStart + 28);
+
+    // Counter: 2 бита
+    uint8_t counter = get_bit(dmBits, payloadStart + 29) |
+                     (get_bit(dmBits, payloadStart + 30) << 1);
+
+    // Pressure inverted: 11 бит, LSB first
+    uint16_t presInv = 0;
+    for (int i = 0; i < 11; i++) {
+        if (get_bit(dmBits, payloadStart + 33 + i)) {
+            presInv |= (1 << i);
+        }
+    }
+
+    // Pressure direct: 11 бит, LSB first
+    uint16_t presDirect = 0;
+    for (int i = 0; i < 11; i++) {
+        if (get_bit(dmBits, payloadStart + 44 + i)) {
+            presDirect |= (1 << i);
+        }
+    }
+
+    // Проверяем: presDirect должен быть ~ 4095 - presInv
+    uint16_t pressure = presDirect;
+    if (presInv != (4095 - presDirect)) {
+        // Попробуем инвертированное
+        pressure = 4095 - presInv;
+    }
+
+    // Temperature: 3 бита, XOR 0x07
+    uint8_t tempEnc = get_bit(dmBits, payloadStart + 55) |
+                     (get_bit(dmBits, payloadStart + 56) << 1) |
+                     (get_bit(dmBits, payloadStart + 57) << 2);
+    int8_t temperature = (int8_t)((tempEnc ^ 0x07) * 10 - 40);
+
+    // CRC check
+    uint8_t crcCalc = 0;
+    uint8_t crcRx = 0;
+    // Собираем первые 58 бит payload
+    uint8_t payload58[8];
+    memset(payload58, 0, sizeof(payload58));
+    for (int i = 0; i < 58; i++) {
+        if (get_bit(dmBits, payloadStart + i)) {
+            payload58[i / 8] |= (1 << (7 - (i % 8)));
+        }
+    }
+    crcCalc = calculate_crc8_pmv(payload58, 58);
+
+    for (int i = 0; i < 8; i++) {
+        if (get_bit(dmBits, payloadStart + 58 + i)) {
+            crcRx |= (1 << i);
+        }
+    }
+
+    free(dmBits);
+
+    // Заполняем результат
+    result->id = id;
+    result->pressure = pressure;
+    result->temperature = temperature;
+    result->counter = counter;
+    result->bat_flag = batFlag;
+    result->rssi = radio.getRssi();
+    result->valid = (crcCalc == crcRx);
+
+    return result->valid;
+}
+
+// =========================================================================
+// Sniffer: управление
+// =========================================================================
+static void sniffer_start() {
+    radio.setIdleState();
+    radio.flushRxFifo();
+
+    // Настраиваем для приёма
+    radio.writeReg(CC1101_PKTCTRL0, 0x32);  // Fixed length, no CRC
+    radio.writeReg(CC1101_PKTLEN, 0xFF);     // максимальная длина
+    radio.writeReg(CC1101_MDMCFG2, 0x10);   // 2-FSK
+    radio.writeReg(CC1101_IOCFG0, 0x06);    // GDO0 = sync detect
+
+    radio.setRxState();
+    snifferActive = true;
+
+    for (int i = 0; i < MAX_SENSORS; i++) {
+        discovered[i].valid = false;
+    }
+
+    sendLog("Sniffer started");
+}
+
+static void sniffer_stop() {
+    radio.setIdleState();
+    snifferActive = false;
+    sendLog("Sniffer stopped");
+}
+
+static void sniffer_loop() {
+    if (!snifferActive) return;
+
+    uint8_t rxBytes = radio.getRxBytes();
+    if (rxBytes == 0 || (rxBytes & 0x80)) {
+        if (rxBytes & 0x80) radio.flushRxFifo();
+        return;
+    }
+
+    uint8_t len = rxBytes & 0x7F;
+    if (len < 10 || len > 30) {
+        radio.flushRxFifo();
+        return;
+    }
+
+    uint8_t buf[32];
+    radio.readBurstReg(CC1101_RXFIFO, buf, len);
+    radio.flushRxFifo();
+
+    // Проверяем, что в RX режиме
+    uint8_t state = radio.getMarcState();
+    if (state != CC1101_MARCSTATE_RX) {
+        radio.setRxState();
+    }
+
+    DiscoveredSensor ds;
+    if (sniffer_decode_packet(buf, len, &ds)) {
+        // Проверяем, не нашли ли уже этот ID
+        int slot = -1;
+        for (int i = 0; i < MAX_SENSORS; i++) {
+            if (discovered[i].valid && discovered[i].id == ds.id) {
+                // Обновляем данные
+                discovered[i] = ds;
+                slot = i;
                 break;
             }
-        }
-    }
-    if (!found) return false;
-
-    uint8_t dm_data[80];
-    memset(dm_data, 0, sizeof(dm_data));
-    uint16_t dm_bit_count = 0;
-    uint16_t max_bits = (len * 8) - preamble_end;
-    if (max_bits > 136) max_bits = 136;
-    for (uint16_t i = preamble_end; i < preamble_end + max_bits; i++) {
-        uint8_t byte_idx = i / 8;
-        uint8_t bit_idx = 7 - (i % 8);
-        bool bit = (raw[byte_idx] >> bit_idx) & 1;
-        if (bit) dm_data[dm_bit_count / 8] |= (1 << (7 - (dm_bit_count % 8)));
-        dm_bit_count++;
-    }
-
-    uint8_t decoded[40];
-    memset(decoded, 0, sizeof(decoded));
-    uint16_t decoded_len = dm_decode(dm_data, dm_bit_count, decoded);
-    if (decoded_len < 68) return false;
-
-#define DECODE_OFFSET 1
-    *id = 0;
-    for (int8_t i = 0; i < 28; i++) {
-        uint8_t byte_idx = (DECODE_OFFSET + i) / 8;
-        uint8_t bit_idx = 7 - ((DECODE_OFFSET + i) % 8);
-        bool bit = (decoded[byte_idx] >> bit_idx) & 1;
-        *id = (*id << 1) | bit;
-    }
-
-    uint8_t p_byte = 0;
-    for (int8_t i = 0; i < 8; i++) {
-        uint8_t byte_idx = (DECODE_OFFSET + 34 + i) / 8;
-        uint8_t bit_idx = 7 - ((DECODE_OFFSET + 34 + i) % 8);
-        bool bit = (decoded[byte_idx] >> bit_idx) & 1;
-        p_byte = (p_byte << 1) | bit;
-    }
-    *pressure = (uint8_t)((float)(p_byte - 40) * 2.48f);
-
-    uint8_t t_byte = 0;
-    for (int8_t i = 0; i < 8; i++) {
-        uint8_t byte_idx = (DECODE_OFFSET + 50 + i) / 8;
-        uint8_t bit_idx = 7 - ((DECODE_OFFSET + 50 + i) % 8);
-        bool bit = (decoded[byte_idx] >> bit_idx) & 1;
-        t_byte = (t_byte << 1) | bit;
-    }
-    *temp = (int8_t)(t_byte - 40);
-
-    uint8_t crc_buf[8];
-    memset(crc_buf, 0, 8);
-    for (uint16_t i = 0; i < 58; i++) {
-        uint8_t byte_idx = (DECODE_OFFSET + i) / 8;
-        uint8_t bit_idx = 7 - ((DECODE_OFFSET + i) % 8);
-        bool bit = (decoded[byte_idx] >> bit_idx) & 1;
-        if (bit) crc_buf[(6 + i) / 8] |= (1 << (7 - ((6 + i) % 8)));
-    }
-    uint8_t crc = calculate_crc8_pmv(crc_buf, 8);
-
-    uint8_t rx_crc = 0;
-    for (int8_t i = 0; i < 8; i++) {
-        uint8_t byte_idx = (DECODE_OFFSET + 58 + i) / 8;
-        uint8_t bit_idx = 7 - ((DECODE_OFFSET + 58 + i) % 8);
-        bool bit = (decoded[byte_idx] >> bit_idx) & 1;
-        rx_crc = (rx_crc << 1) | bit;
-    }
-    return crc == rx_crc;
-}
-
-// ============================================================================
-// Sniffer Mode
-// ============================================================================
-void sniffer_start() {
-    if (!can_sniff()) {
-        uartSendLog("[SNIFFER] BLOCKED - trial expired, license required");
-        return;
-    }
-    uartSendLog("[SNIFFER] Starting...");
-    snifferActive = true;
-    snifferStartMs = millis();
-    sniffer_count = 0;
-    memset(sniffer_sensors, 0, sizeof(sniffer_sensors));
-
-    float freq = (config.freq == 1) ? TPMS_FREQ_433 : TPMS_FREQ_315;
-    cc1101.setIdleState();
-    delay(1);
-    cc1101.setFreqConfig(freq);
-    cc1101.setFreq(freq);
-    cc1101.setRxConfig();
-    cc1101.setModulation(0);
-    cc1101.setSyncMode(0);
-    set_cc1101_data_rate(config.datarate);
-    set_cc1101_deviation(38.0f);
-    set_cc1101_manchester(0);
-    cc1101.sendCommand(CC1101_SCAL);
-    delay(3);
-    cc1101.flushRxFifo();
-    cc1101.setRxState();
-
-    char buf[80];
-    snprintf(buf, sizeof(buf), "[SNIFFER] Freq=%.0f MHz, DR=%lu, Dev=38kHz", freq, (unsigned long)config.datarate);
-    uartSendLog(buf);
-    uartBroadcastStatus();
-}
-
-void sniffer_stop() {
-    if (!snifferActive) return;
-    snifferActive = false;
-    cc1101.setIdleState();
-    delay(1);
-    char buf[64];
-    snprintf(buf, sizeof(buf), "[SNIFFER] Stopped - %d sensors found", sniffer_count);
-    uartSendLog(buf);
-    if (sniffer_count > 0) {
-        snifferStartMs = 0xFFFFFFFF;
-        uartSendLog("[SNIFFER] Sensors found. Use 'sniff_apply' to save.");
-    } else {
-        snifferStartMs = millis() + 10000;
-    }
-    uartBroadcastStatus();
-}
-
-void sniffer_loop() {
-    if (!snifferActive) return;
-    if (millis() - snifferStartMs > SNIFFER_TIMEOUT_MS) {
-        uartSendLog("[SNIFFER] Timeout - stopping");
-        sniffer_stop();
-        return;
-    }
-
-    static uint8_t acc_buf[256];
-    static uint16_t acc_len = 0;
-    static bool rxRunning = false;
-
-    if (!rxRunning) {
-        cc1101.setIdleState();
-        delay(1);
-        cc1101.flushRxFifo();
-        cc1101.sendCommand(CC1101_SCAL);
-        delay(3);
-        cc1101.setRxState();
-        rxRunning = true;
-        acc_len = 0;
-    }
-
-    uint8_t marc = cc1101.getMarcState();
-    if (marc != 0x0D) {
-        cc1101.setIdleState();
-        delay(1);
-        cc1101.flushRxFifo();
-        cc1101.sendCommand(CC1101_SCAL);
-        delay(3);
-        cc1101.setRxState();
-        acc_len = 0;
-    }
-
-    uint8_t rx_bytes = cc1101.getRxBytes() & 0x7F;
-    if (rx_bytes > 0) {
-        if (rx_bytes > 64) rx_bytes = 64;
-        if (acc_len + rx_bytes <= sizeof(acc_buf)) {
-            cc1101.readBurstReg(CC1101_RX_FIFO, acc_buf + acc_len, rx_bytes);
-            acc_len += rx_bytes;
-        }
-    }
-
-    if (acc_len >= 10) {
-        int8_t rssi = cc1101.getRssi();
-        if (rssi > -95) {
-            uint32_t id = 0;
-            uint8_t pressure = 0;
-            int8_t temp = 0;
-            if (sniffer_decode_packet(acc_buf, acc_len, &id, &pressure, &temp)) {
-                char buf[128];
-                snprintf(buf, sizeof(buf), "*** DECODE OK: ID=%08lx P=%d T=%d RSSI=%d",
-                         (unsigned long)id, pressure, temp, rssi);
-                uartSendLog(buf);
-
-                bool found = false;
-                for (uint8_t i = 0; i < sniffer_count; i++) {
-                    if (sniffer_sensors[i].sensor_id == id) {
-                        sniffer_sensors[i].last_seen_ms = millis();
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found && sniffer_count < SNIFFER_MAX_SENSORS) {
-                    sniffer_sensors[sniffer_count].sensor_id = id;
-                    sniffer_sensors[sniffer_count].pressure_kpa = pressure;
-                    sniffer_sensors[sniffer_count].temperature_c = temp;
-                    sniffer_sensors[sniffer_count].battery_ok = 1;
-                    sniffer_sensors[sniffer_count].last_seen_ms = millis();
-                    sniffer_sensors[sniffer_count].valid = true;
-                    sniffer_count++;
-                    sniffer_discovery_ms = millis();
-                    snprintf(buf, sizeof(buf), "*** FOUND sensor #%d: ID=%08lx P=%dkPa T=%dC",
-                             sniffer_count, (unsigned long)id, pressure, temp);
-                    uartSendLog(buf);
-                    uartBroadcastStatus();
-                    if (sniffer_count >= SNIFFER_MAX_SENSORS || sniffer_count >= TPMS_NUM_SENSORS) {
-                        uartSendLog("[SNIFFER] All sensors found, stopping");
-                        sniffer_stop();
-                        return;
-                    }
-                }
-                acc_len = 0;
+            if (!discovered[i].valid && slot < 0) {
+                slot = i;
             }
         }
-    }
 
-    if (acc_len >= sizeof(acc_buf) - 64) {
-        uint16_t keep = 64;
-        memmove(acc_buf, acc_buf + (acc_len - keep), keep);
-        acc_len = keep;
-    }
-
-    if (sniffer_count > 0 && (millis() - sniffer_discovery_ms) > 60000) {
-        uartSendLog("[SNIFFER] No new sensors for 60s, stopping");
-        sniffer_stop();
-    }
-}
-
-// ============================================================================
-// Config
-// ============================================================================
-void init_config() {
-    config.magic = EEPROM_MAGIC;
-    config.datarate = TPMS_DEFAULT_DATARATE;
-    config.deviation = (uint16_t)(TPMS_DEFAULT_DEVIATION * 10);
-    config.power = TPMS_DEFAULT_POWER;
-    config.tx_enabled = 1;
-    config.freq = 0;
-    memset(config.reserved, 0, 3);
-    config.autoTxInterval = 300;
-    config.autoTxPackets = 2;
-    config.reserved2 = 0;
-    config.battMah = BATT_DEFAULT_MAH;
-    ee_buf[EE_LICENSE] = 0;
-
-    for (uint8_t i = 0; i < TPMS_NUM_SENSORS; i++) {
-        config.sensors[i].sensor_id = DEFAULT_SENSOR_IDS[i];
-        config.sensors[i].pressure_kpa = 230;
-        config.sensors[i].temperature_c = 20;
-        config.sensors[i].battery_ok = 0;
-        config.sensors[i].flags = 0x01;
-    }
-}
-
-void load_config() {
-    eeprom_load();
-    if (ee_buf[EE_MAGIC] != EEPROM_MAGIC) {
-        init_config();
-        save_config();
-    } else {
-        config.datarate       = ee_read32(EE_DATARATE);
-        config.deviation      = ee_read16(EE_DEVIATION);
-        config.power          = constrain(ee_buf[EE_POWER], TPMS_POWER_MIN, TPMS_POWER_MAX);
-        config.manchester_en  = ee_buf[EE_MANCH_EN];
-        config.tx_enabled     = ee_buf[EE_TX_ENABLED];
-        config.freq           = constrain(ee_buf[EE_FREQ], 0, 1);
-        config.autoTxInterval = ee_read16(EE_TX_INTERVAL);
-        config.autoTxPackets  = ee_buf[EE_TX_PACKETS];
-
-        autoTxEnabled  = config.tx_enabled ? true : false;
-        autoTxInterval = config.autoTxInterval;
-        autoTxPackets  = config.autoTxPackets;
-
-        uint16_t bmah = ee_read16(EE_BATT_MAH);
-        config.battMah = (bmah == 0xFFFF || bmah == 0) ? BATT_DEFAULT_MAH : bmah;
-
-        for (uint8_t i = 0; i < TPMS_NUM_SENSORS; i++) {
-            int off = EE_SENSORS + i * 7;
-            config.sensors[i].sensor_id     = ee_read32(off);
-            config.sensors[i].pressure_kpa  = ee_buf[off + 4];
-            config.sensors[i].temperature_c = (int8_t)ee_buf[off + 5];
-            config.sensors[i].battery_ok    = ee_buf[off + 6] & 0x01;
-            config.sensors[i].flags         = ee_buf[off + 6] >> 1;
+        if (slot >= 0 && !discovered[slot].valid) {
+            // Новый датчик
+            discovered[slot] = ds;
         }
-        for (uint8_t i = 0; i < TPMS_NUM_SENSORS; i++) {
-            if (config.sensors[i].flags == 0) config.sensors[i].flags = 0x01;
-        }
+
+        // Отправляем данные в BLE
+        char buf2[160];
+        snprintf(buf2, sizeof(buf2),
+                 "{\"t\":\"pkt\",\"id\":\"%06X\",\"p\":%d,\"tmp\":%d,\"c\":%d,\"rssi\":%d}",
+                 (unsigned)ds.id, (unsigned)ds.pressure, (int)ds.temperature,
+                 (int)ds.counter, (int)ds.rssi);
+        bleSendChunked(buf2);
     }
 }
 
-void save_config() {
-    flush_trial();
-    ee_buf[EE_MAGIC]       = EEPROM_MAGIC;
-    ee_write32(EE_DATARATE, config.datarate);
-    ee_write16(EE_DEVIATION, config.deviation);
-    ee_buf[EE_POWER]       = config.power;
-    ee_buf[EE_MANCH_EN]    = config.manchester_en;
-    ee_buf[EE_TX_ENABLED]  = config.tx_enabled;
-    ee_buf[EE_FREQ]        = config.freq;
-    ee_write16(EE_TX_INTERVAL, config.autoTxInterval);
-    ee_buf[EE_TX_PACKETS]  = config.autoTxPackets;
-    ee_write16(EE_BATT_MAH, config.battMah);
+// =========================================================================
+// Конфигурация: загрузка/сохранение через LittleFS
+// =========================================================================
+static void setDefaultConfig() {
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.magic = CONFIG_MAGIC;
+    cfg.datarate = DEFAULT_DATARATE;
+    cfg.deviation = DEFAULT_DEVIATION / 100;
+    cfg.power = DEFAULT_POWER;
+    cfg.manch_en = 1;
+    cfg.tx_enabled = 0;
+    cfg.tx_interval = DEFAULT_INTERVAL;
+    cfg.tx_packets = DEFAULT_PACKETS;
+    cfg.freq = DEFAULT_FREQ_315;
+    cfg.batt_mah = 500;
 
-    for (uint8_t i = 0; i < TPMS_NUM_SENSORS; i++) {
-        int off = EE_SENSORS + i * 7;
-        ee_write32(off, config.sensors[i].sensor_id);
-        ee_buf[off + 4] = config.sensors[i].pressure_kpa;
-        ee_buf[off + 5] = (uint8_t)config.sensors[i].temperature_c;
-        ee_buf[off + 6] = (config.sensors[i].battery_ok & 0x01) | (config.sensors[i].flags << 1);
-    }
+    // Датчики по умолчанию (Acura RDX 2008)
+    cfg.sensors[0].id = 0x00298088; cfg.sensors[0].pressure = 2300; cfg.sensors[0].temperature = 20; cfg.sensors[0].flags = 0x01;
+    cfg.sensors[1].id = 0x0466E088; cfg.sensors[1].pressure = 2300; cfg.sensors[1].temperature = 20; cfg.sensors[1].flags = 0x01;
+    cfg.sensors[2].id = 0x0D784088; cfg.sensors[2].pressure = 2300; cfg.sensors[2].temperature = 20; cfg.sensors[2].flags = 0x01;
+    cfg.sensors[3].id = 0x0C765088; cfg.sensors[3].pressure = 2300; cfg.sensors[3].temperature = 20; cfg.sensors[3].flags = 0x01;
 
-    if (ee_buf[EE_LICENSE] != 0xFF) ee_buf[EE_LICENSE] = 0;
-    if (ee_read32(EE_TRIAL_SEC) == 0xFFFFFFFF) ee_write32(EE_TRIAL_SEC, 0);
-
-    eeprom_commit();
+    trialStartTime = millis() / 1000;
 }
 
-// ============================================================================
-// Auto-TX
-// ============================================================================
-void runAutoTx() {
-    if (!autoTxEnabled || autoTxRunning || snifferActive) return;
-    if (!is_licensed() && is_trial_expired()) return;
-    if (isBatteryCritical()) return;
-
-    uint32_t elapsed = millis() - autoTxLastMs;
-    if (elapsed < (uint32_t)autoTxInterval * 1000UL) return;
-
-    autoTxRunning = true;
-    uartSendLog("[AUTO-TX] Sending burst...");
-    send_burst_all();
-    uartSendLog("[AUTO-TX] Burst done");
-    autoTxRunning = false;
-    autoTxLastMs = millis();
-    uartBroadcastStatus();
-}
-
-// ============================================================================
-// JSON Helpers
-// ============================================================================
-static String jsonGetString(const String &json, const char *key) {
-    String search = String("\"") + key + String("\":");
-    int pos = json.indexOf(search);
-    if (pos < 0) return "";
-    int valStart = pos + search.length();
-    while (valStart < (int)json.length() && json[valStart] == ' ') valStart++;
-    if (valStart >= (int)json.length()) return "";
-    if (json[valStart] == '"') {
-        int end = json.indexOf('"', valStart + 1);
-        if (end < 0) return "";
-        return json.substring(valStart + 1, end);
-    } else {
-        int end = valStart;
-        while (end < (int)json.length() &&
-               json[end] != ',' && json[end] != '}' && json[end] != ' ' && json[end] != '\n') end++;
-        return json.substring(valStart, end);
-    }
-}
-
-static long jsonGetLong(const String &json, const char *key) {
-    String val = jsonGetString(json, key);
-    if (val.length() == 0) return 0;
-    if (val == "true") return 1;
-    if (val == "false") return 0;
-    return val.toInt();
-}
-
-static String buildStatusJson() {
-    String json = "{\"t\":\"status\",\"data\":{";
-    json += String("\"sensors\":[");
-    for (uint8_t i = 0; i < TPMS_NUM_SENSORS; i++) {
-        SensorConfig *s = &config.sensors[i];
-        if (i > 0) json += ",";
-        bool en = s->flags & 0x01;
-        char idBuf[9];
-        snprintf(idBuf, sizeof(idBuf), "%08lx", (unsigned long)s->sensor_id);
-        uartSendLog("[DBG] status sensor " + String(i) + " id=" + String(idBuf));
-        json += "{\"id\":\"" + String(idBuf) + "\",\"pressure\":" + String(s->pressure_kpa)
-             + ",\"temp\":" + String(s->temperature_c) + ",\"enabled\":" + (en ? "true" : "false") + "}";
-    }
-    json += "],\"freq\":" + String(config.freq == 1 ? 433 : 315);
-    json += ",\"settings\":{\"datarate\":" + String(config.datarate)
-         + ",\"deviation\":" + String(config.deviation / 10.0f, 1)
-         + ",\"power\":" + String(config.power) + "}";
-    json += ",\"autoTx\":{\"enabled\":" + String(autoTxEnabled ? "true" : "false")
-         + ",\"interval\":" + String(autoTxInterval)
-         + ",\"packets\":" + String(autoTxPackets) + "}";
-    json += ",\"platform\":\"nrf52840\"";
-    json += ",\"license\":{\"licensed\":" + String(is_licensed() ? "true" : "false")
-         + ",\"trialSec\":" + String(get_trial_seconds())
-         + ",\"trialMax\":86400}";
-    json += ",\"battery\":{\"mv\":" + String(readBatteryMv())
-         + ",\"pct\":" + String(getBatteryPercent())
-         + ",\"low\":" + String(isBatteryLow() ? "true" : "false")
-         + ",\"critical\":" + String(isBatteryCritical() ? "true" : "false")
-         + ",\"mah\":" + String(config.battMah) + "}";
-    json += ",\"sniffer\":{\"active\":" + String(snifferActive ? "true" : "false")
-         + ",\"count\":" + String(sniffer_count) + ",\"sensors\":[";
-    for (uint8_t i = 0; i < sniffer_count; i++) {
-        if (i > 0) json += ",";
-        char idBuf[9];
-        snprintf(idBuf, sizeof(idBuf), "%08lx", (unsigned long)sniffer_sensors[i].sensor_id);
-        json += "{\"id\":\"" + String(idBuf) + "\",\"p\":" + String(sniffer_sensors[i].pressure_kpa)
-             + ",\"t\":" + String(sniffer_sensors[i].temperature_c) + "}";
-    }
-    json += "]";
-
-    File df = InternalFS.open("tpms_cfg", FILE_O_READ);
-    if (df) {
-        uint8_t tmp[EE_SENSORS+4];
-        df.read(tmp, sizeof(tmp));
-        df.close();
-        json += ",\"debug\":{\"magic\":\"0x" + String(tmp[EE_MAGIC], HEX) + "\",\"id0\":\"0x" + String(tmp[EE_SENSORS+3], HEX) + String(tmp[EE_SENSORS+2], HEX) + String(tmp[EE_SENSORS+1], HEX) + String(tmp[EE_SENSORS], HEX) + "\",\"last\":\"" + String(dbg_last_id) + "\"}";
-    } else {
-        json += ",\"debug\":{\"error\":\"no file\"}";
-    }
-
-    json += "}}}";
-    return json;
-}
-
-static void uartPrint(const String &msg) {
-    // Send message in chunks and yield to BLE stack to avoid FIFO loss
-    const size_t chunkSize = 20;
-    const char *data = msg.c_str();
-    size_t len = msg.length();
-    size_t sent = 0;
-    while (sent < len) {
-        size_t n = min(chunkSize, len - sent);
-        size_t written = bleUart.write((const uint8_t *)(data + sent), n);
-        if (written == 0) {
-            delay(1);
-            continue;
-        }
-        sent += written;
-        delay(1);
-    }
-}
-
-void uartSendLog(const String &msg) {
-    String json = "{\"t\":\"log\",\"m\":\"";
-    String escaped = msg;
-    escaped.replace("\\", "\\\\");
-    escaped.replace("\"", "\\\"");
-    escaped.replace("\n", "\\n");
-    json += escaped;
-    json += "\"}";
-    uartPrint(json);
-    uartPrint("\n");
-}
-
-void uartBroadcastStatus() {
-    String json = buildStatusJson();
-    uartPrint(json);
-    uartPrint("\n");
-}
-
-// ============================================================================
-// BLE UART Command Processor
-// ============================================================================
-void processCommand(const String &msg) {
-    uartSendLog("[DBG] MSG(len=" + String(msg.length()) + ")");
-    String cmd = jsonGetString(msg, "cmd");
-    cmd.trim();
-
-    if (cmd == "status") {
-        uartBroadcastStatus();
-    } else if (cmd == "burst") {
-        uartSendLog("[CMD] Burst all enabled sensors");
-        send_burst_all();
-        uartSendLog("[CMD] Burst done");
-        uartBroadcastStatus();
-    } else if (cmd == "tx") {
-        autoTxEnabled = true;
-        config.tx_enabled = 1;
-        autoTxLastMs = millis() - (uint32_t)autoTxInterval * 1000UL;
-        save_config();
-        uartSendLog("[CMD] Auto-TX enabled");
-        uartBroadcastStatus();
-    } else if (cmd == "stop") {
-        autoTxEnabled = false;
-        config.tx_enabled = 0;
-        save_config();
-        uartSendLog("[CMD] Auto-TX disabled");
-        uartBroadcastStatus();
-    } else if (cmd == "reset") {
-        init_config();
-        save_config();
-        uartSendLog("[CMD] Config reset to defaults");
-        uartBroadcastStatus();
-    } else if (cmd == "license") {
-        String key = jsonGetString(msg, "key");
-        if (key.length() == 8) {
-            bool valid = true;
-            for (int i = 0; i < 8; i++) {
-                char c = key[i];
-                if (!isxdigit(c)) { valid = false; break; }
-            }
-            if (valid) {
-                ee_buf[EE_LICENSE] = 0xFF;
-                eeprom_commit();
-                
-                uartSendLog("[LICENSE] Key accepted");
-            } else {
-                uartSendLog("[LICENSE] Invalid key");
-            }
-        } else {
-            uartSendLog("[LICENSE] Key must be 8 hex chars");
-        }
-        uartBroadcastStatus();
-    } else if (cmd == "sniff_start") {
-        sniffer_start();
-        uartBroadcastStatus();
-    } else if (cmd == "sniff_stop") {
-        sniffer_stop();
-        uartBroadcastStatus();
-    } else if (cmd == "sniff_apply") {
-        for (uint8_t i = 0; i < sniffer_count && i < TPMS_NUM_SENSORS; i++) {
-            config.sensors[i].sensor_id = sniffer_sensors[i].sensor_id;
-            config.sensors[i].pressure_kpa = sniffer_sensors[i].pressure_kpa;
-            config.sensors[i].temperature_c = sniffer_sensors[i].temperature_c;
-            config.sensors[i].battery_ok = sniffer_sensors[i].battery_ok;
-            config.sensors[i].flags = 0x01;
-        }
-        save_config();
-        uartSendLog("[SNIFFER] Applied " + String(sniffer_count) + " sensors");
-        uartBroadcastStatus();
-    } else if (cmd == "sensor") {
-        int sensorIdx = (int)jsonGetLong(msg, "sensor");
-        if (sensorIdx >= 0 && sensorIdx < TPMS_NUM_SENSORS) {
-            String idStr = jsonGetString(msg, "id");
-            if (idStr.length() > 0) {
-                bool valid = true;
-                for (int i = 0; i < idStr.length() && i < 8; i++) {
-                    if (!isxdigit(idStr[i])) { valid = false; break; }
-                }
-                dbg_last_id[0] = 0;
-                snprintf(dbg_last_id, sizeof(dbg_last_id), "id=%s len=%d valid=%s", idStr.c_str(), idStr.length(), (valid && idStr.length() <= 8) ? "Y" : "N");
-                uartSendLog("[DBG] idStr='" + idStr + "' len=" + String(idStr.length()) + " valid=" + String(valid ? "Y" : "N"));
-            if (valid && idStr.length() <= 8) {
-                    config.sensors[sensorIdx].sensor_id = (uint32_t)strtoul(idStr.c_str(), NULL, 16);
-                    snprintf(dbg_last_id, sizeof(dbg_last_id), "id=%s parsed=0x%08lx", idStr.c_str(), (unsigned long)config.sensors[sensorIdx].sensor_id);
-                    uartSendLog("[DBG] SET sensor_id=0x" + String(config.sensors[sensorIdx].sensor_id, HEX));
-                } else {
-                    snprintf(dbg_last_id, sizeof(dbg_last_id), "id=%s len=%d REJECTED", idStr.c_str(), idStr.length());
-                    uartSendLog("[DBG] NOT setting sensor_id");
-                }
-            }
-            long p = jsonGetLong(msg, "pressure");
-            if (msg.indexOf("\"pressure\"") >= 0) config.sensors[sensorIdx].pressure_kpa = (uint8_t)p;
-            long t = jsonGetLong(msg, "temp");
-            if (msg.indexOf("\"temp\"") >= 0) config.sensors[sensorIdx].temperature_c = (int8_t)t;
-            String enabledStr = jsonGetString(msg, "enabled");
-            if (enabledStr.length() > 0) {
-                if (enabledStr == "true") config.sensors[sensorIdx].flags |= 0x01;
-                else config.sensors[sensorIdx].flags &= ~0x01;
-            }
-            save_config();
-            uartSendLog("[API] Sensor " + String(sensorIdx + 1) + " updated");
-            uartBroadcastStatus();
-        }
-    } else if (cmd == "autotx") {
-        String enabledStr = jsonGetString(msg, "enabled");
-        if (enabledStr.length() > 0) autoTxEnabled = (enabledStr == "true");
-        long interval = jsonGetLong(msg, "interval");
-        if (msg.indexOf("\"interval\"") >= 0) {
-            autoTxInterval = (uint16_t)interval;
-            if (autoTxInterval < 5) autoTxInterval = 5;
-            if (autoTxInterval > TPMS_MAX_TX_INTERVAL) autoTxInterval = TPMS_MAX_TX_INTERVAL;
-        }
-        long packets = jsonGetLong(msg, "packets");
-        if (msg.indexOf("\"packets\"") >= 0) {
-            autoTxPackets = (uint8_t)packets;
-            if (autoTxPackets < 1) autoTxPackets = 1;
-            if (autoTxPackets > 20) autoTxPackets = 20;
-        }
-        config.tx_enabled = autoTxEnabled ? 1 : 0;
-        config.autoTxInterval = autoTxInterval;
-        config.autoTxPackets = autoTxPackets;
-        save_config();
-        uartSendLog("[API] Auto-TX updated");
-        uartBroadcastStatus();
-    } else if (cmd == "settings") {
-        long freq = jsonGetLong(msg, "freq");
-        if (msg.indexOf("\"freq\"") >= 0) {
-            config.freq = (freq == 433) ? 1 : 0;
-            float f = (config.freq == 1) ? TPMS_FREQ_433 : TPMS_FREQ_315;
-            cc1101.setFreq(f);
-            cc1101.setFreqConfig(f);
-            set_cc1101_power(config.power);
-            uartSendLog("[API] Frequency changed to " + String(freq) + " MHz");
-        }
-        save_config();
-        uartBroadcastStatus();
-    } else if (cmd.length() == 3 && cmd.startsWith("tx")) {
-        uint8_t si = cmd.charAt(2) - '1';
-        if (si < TPMS_NUM_SENSORS) {
-            uartSendLog("[CMD] TX sensor " + String(si + 1));
-            send_pmv107j_sensor(si);
-            uartBroadcastStatus();
-        }
-    } else {
-        uartSendLog("[CMD] Unknown: " + cmd);
-    }
-}
-void bleuart_rx_callback(uint16_t conn_handle) {
-    (void)conn_handle;
-
-    while (bleUart.available()) {
-        char c = bleUart.read();
-        if (c == '\n') {
-            bleCommandBuffer.trim();
-            if (bleCommandBuffer.length() > 0) {
-                bleCommandReady = true;
-            }
-        } else if (!bleCommandReady && bleCommandBuffer.length() < 512) {
-            bleCommandBuffer += c;
-        }
-    }
-}
-
-void startAdv() {
-    Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
-    Bluefruit.Advertising.addTxPower();
-    Bluefruit.Advertising.addName();
-    Bluefruit.Advertising.addService(bleUart);
-    Bluefruit.Advertising.restartOnDisconnect(true);
-    Bluefruit.Advertising.setInterval(32, 244);
-    Bluefruit.Advertising.setFastTimeout(30);
-    Bluefruit.Advertising.start(0);
-}
-
-// ============================================================================
-// Setup / Loop
-// ============================================================================
-void setup() {
-    pinMode(PIN_LED_STATUS, OUTPUT);
-    digitalWrite(PIN_LED_STATUS, HIGH);
-
-    pinMode(PIN_CC1101_POWER, OUTPUT);
-    digitalWrite(PIN_CC1101_POWER, LOW);
-
-    // BLE init FIRST — needed by InternalFS flash operations (SoftDevice event callback)
-    Bluefruit.begin();
-    Bluefruit.setName("TPMS-NRF52840");
-    Bluefruit.setTxPower(4);
-    Bluefruit.Periph.begin();
-
-    // InternalFS init SECOND — may format flash on first boot, uses SoftDevice flash API
+static bool loadConfig() {
     InternalFS.begin();
 
-    bleUart.begin();
-    bleUart.setRxCallback(bleuart_rx_callback);
+    if (!file.open(CONFIG_FILENAME, FILE_O_READ)) {
+        sendLog("Config not found, using defaults");
+        setDefaultConfig();
+        saveConfig();
+        return false;
+    }
 
-    // Load config from InternalFS
-    load_config();
+    TPMSConfig tmp;
+    size_t readLen = file.read(&tmp, sizeof(tmp));
+    file.close();
 
-    autoTxEnabled = true;
-    config.tx_enabled = 1;
-    if (autoTxInterval < 5) autoTxInterval = 5;
+    if (readLen != sizeof(tmp) || tmp.magic != CONFIG_MAGIC) {
+        sendLog("Config corrupt, using defaults");
+        setDefaultConfig();
+        saveConfig();
+        return false;
+    }
 
-    // CC1101
-    cc1101_power_on();
-    init_cc1101();
+    memcpy(&cfg, &tmp, sizeof(cfg));
+    trialStartTime = cfg.trial_start;
 
-    autoTxLastMs = millis();
+    // Проверяем лицензию
+    if (cfg.license_key[0] || cfg.license_key[1] || cfg.license_key[2] || cfg.license_key[3]) {
+        licenseValid = 2;  // полная лицензия
+    } else if (trialStartTime > 0) {
+        uint32_t elapsed = (millis() / 1000) - trialStartTime;
+        licenseValid = (elapsed < TRIAL_SECONDS) ? 1 : 0;
+    }
 
-    // Start advertising LAST — after all init is done
-    startAdv();
-
-    digitalWrite(PIN_LED_STATUS, LOW);
-    uartSendLog("[SETUP] TPMS nRF52840 v2 ready");
+    sendLog("Config loaded");
+    return true;
 }
 
+static bool saveConfig() {
+    InternalFS.begin();
+
+    cfg.trial_start = trialStartTime;
+
+    file.open(CONFIG_FILENAME, FILE_O_WRITE);
+    size_t written = file.write(&cfg, sizeof(cfg));
+    file.close();
+
+    if (written != sizeof(cfg)) {
+        sendLog("Config save FAILED");
+        return false;
+    }
+    InternalFS.end();
+    return true;
+}
+
+// =========================================================================
+// Отправка полного статуса в BLE
+// =========================================================================
+static void sendStatus() {
+    char buf[768];
+    int pos = 0;
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+        "{\"t\":\"status\",\"data\":{");
+
+    // Настройки
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+        "\"freq\":%d,\"drate\":%lu,\"dev\":%u,\"pwr\":%u,"
+        "\"tx_en\":%d,\"tx_int\":%u,\"tx_pkt\":%u,"
+        "\"batt_mv\":%u,\"batt_pct\":%u,\"license\":%u,"
+        "\"sniff\":%d,",
+        cfg.freq, (unsigned long)cfg.datarate, (unsigned)cfg.deviation, (unsigned)cfg.power,
+        cfg.tx_enabled, (unsigned)cfg.tx_interval, (unsigned)cfg.tx_packets,
+        (unsigned)readBatteryMv(), (unsigned)getBatteryPercent(),
+        (unsigned)licenseValid, snifferActive ? 1 : 0);
+
+    // Датчики
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "\"sensors\":[");
+    const char *labels[] = {"PL", "PP", "ZL", "ZP"};
+    for (int i = 0; i < MAX_SENSORS; i++) {
+        SensorConfig *s = &cfg.sensors[i];
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+            "%s{\"i\":%d,\"id\":\"%06X\",\"p\":%u,\"t\":%d,\"en\":%d,\"l\":\"%s\"}",
+            (i > 0) ? "," : "",
+            i, (unsigned)s->id, (unsigned)s->pressure, (int)s->temperature,
+            (s->flags & 0x01) ? 1 : 0, labels[i]);
+    }
+
+    // Обнаруженные (сниффер)
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "],\"disc\":[");
+    for (int i = 0; i < MAX_SENSORS; i++) {
+        if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+        if (discovered[i].valid) {
+            pos += snprintf(buf + pos, sizeof(buf) - pos,
+                "{\"id\":\"%06X\",\"p\":%u,\"t\":%d,\"rssi\":%d}",
+                (unsigned)discovered[i].id, (unsigned)discovered[i].pressure,
+                (int)discovered[i].temperature, (int)discovered[i].rssi);
+        } else {
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "null");
+        }
+    }
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "]}}");
+
+    bleSendChunked(buf);
+}
+
+// =========================================================================
+// BLE RX callback
+// =========================================================================
+static void bleRxCallback(uint16_t conn_hdl) {
+    (void)conn_hdl;
+
+    while (bleuart.available()) {
+        int c = bleuart.read();
+        if (c < 0) break;
+
+        if (c == '\n' || c == '\r') {
+            if (cmdBufLen > 0) {
+                cmdBuf[cmdBufLen] = 0;
+                cmdBufLen = 0;
+                // Команда будет обработана в main loop
+            }
+        } else if (cmdBufLen < CMD_BUFFER_SIZE - 1) {
+            cmdBuf[cmdBufLen++] = (char)c;
+        }
+    }
+}
+
+// =========================================================================
+// Обработка JSON команд
+// =========================================================================
+
+// Простой парсер JSON: ищет "cmd":"value"
+static bool jsonGetString(const char *json, const char *key, char *out, uint8_t outLen) {
+    char search[32];
+    snprintf(search, sizeof(search), "\"%s\":\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return false;
+    p += strlen(search);
+    uint8_t i = 0;
+    while (*p && *p != '"' && i < outLen - 1) {
+        out[i++] = *p++;
+    }
+    out[i] = 0;
+    return i > 0;
+}
+
+static bool jsonGetInt(const char *json, const char *key, int32_t *out) {
+    char search[32];
+    snprintf(search, sizeof(search), "\"%s\":", key);
+    const char *p = strstr(json, search);
+    if (!p) return false;
+    p += strlen(search);
+    while (*p == ' ') p++;
+    if (*p == '"') p++;  // пропускаем кавычки для строковых чисел
+    *out = (int32_t)atol(p);
+    return true;
+}
+
+static bool jsonGetBool(const char *json, const char *key, bool *out) {
+    char search[32];
+    snprintf(search, sizeof(search), "\"%s\":", key);
+    const char *p = strstr(json, search);
+    if (!p) return false;
+    p += strlen(search);
+    while (*p == ' ') p++;
+    if (strncmp(p, "true", 4) == 0) { *out = true; return true; }
+    if (strncmp(p, "false", 5) == 0) { *out = false; return true; }
+    // Попробуем как число
+    *out = (atoi(p) != 0);
+    return true;
+}
+
+static void processCommand(const char *cmd) {
+    char cmdName[32] = {0};
+    jsonGetString(cmd, "cmd", cmdName, sizeof(cmdName));
+
+    if (strcmp(cmdName, "status") == 0) {
+        sendStatus();
+    }
+    else if (strcmp(cmdName, "burst") == 0) {
+        sendBurst();
+    }
+    else if (strcmp(cmdName, "tx") == 0) {
+        cfg.tx_enabled = 1;
+        lastAutoTx = millis() / 1000 - cfg.tx_interval;  // отправить сразу
+        sendLog("Auto-TX started");
+    }
+    else if (strcmp(cmdName, "stop") == 0) {
+        cfg.tx_enabled = 0;
+        if (snifferActive) sniffer_stop();
+        radio.setIdleState();
+        sendLog("Stopped");
+    }
+    else if (strcmp(cmdName, "reset") == 0) {
+        setDefaultConfig();
+        saveConfig();
+        radio.setFreq(cfg.freq == 433 ? 433000000UL : 315000000UL);
+        sendLog("Config reset to defaults");
+    }
+    else if (strcmp(cmdName, "sensor") == 0) {
+        int32_t sensorIdx = 0;
+        jsonGetInt(cmd, "sensor", &sensorIdx);
+        if (sensorIdx < 0 || sensorIdx >= MAX_SENSORS) {
+            sendLog("Invalid sensor index");
+            return;
+        }
+
+        char idStr[16] = {0};
+        if (jsonGetString(cmd, "id", idStr, sizeof(idStr))) {
+            cfg.sensors[sensorIdx].id = (uint32_t)strtoul(idStr, NULL, 16);
+        }
+
+        int32_t pressure = 0;
+        if (jsonGetInt(cmd, "pressure", &pressure)) {
+            cfg.sensors[sensorIdx].pressure = (uint16_t)pressure;
+        }
+
+        int32_t temp = 0;
+        if (jsonGetInt(cmd, "temp", &temp)) {
+            cfg.sensors[sensorIdx].temperature = (int8_t)temp;
+        }
+
+        bool enabled = false;
+        if (jsonGetBool(cmd, "enabled", &enabled)) {
+            cfg.sensors[sensorIdx].flags = (cfg.sensors[sensorIdx].flags & 0xFE) | (enabled ? 1 : 0);
+        }
+
+        saveConfig();
+        char logBuf[64];
+        snprintf(logBuf, sizeof(logBuf), "Sensor %d updated", (int)sensorIdx);
+        sendLog(logBuf);
+    }
+    else if (strcmp(cmdName, "autotx") == 0) {
+        bool enabled = false;
+        if (jsonGetBool(cmd, "enabled", &enabled)) {
+            cfg.tx_enabled = enabled ? 1 : 0;
+        }
+        int32_t interval = 0;
+        if (jsonGetInt(cmd, "interval", &interval)) {
+            cfg.tx_interval = (uint16_t)constrain(interval, 5, 900);
+        }
+        int32_t packets = 0;
+        if (jsonGetInt(cmd, "packets", &packets)) {
+            cfg.tx_packets = (uint8_t)constrain(packets, 1, 20);
+        }
+        saveConfig();
+        sendLog("Auto-TX config updated");
+    }
+    else if (strcmp(cmdName, "settings") == 0) {
+        int32_t freq = 0;
+        if (jsonGetInt(cmd, "freq", &freq)) {
+            cfg.freq = (uint8_t)freq;
+            uint32_t freqHz = (freq == 433) ? 433000000UL : 315000000UL;
+            radio.setFreq(freqHz);
+            sendLog("Frequency changed");
+        }
+        saveConfig();
+    }
+    else if (strcmp(cmdName, "sniff_start") == 0) {
+        if (cfg.tx_enabled) {
+            cfg.tx_enabled = 0;
+        }
+        sniffer_start();
+    }
+    else if (strcmp(cmdName, "sniff_stop") == 0) {
+        sniffer_stop();
+    }
+    else if (strcmp(cmdName, "sniff_apply") == 0) {
+        int applied = 0;
+        for (int i = 0; i < MAX_SENSORS; i++) {
+            if (discovered[i].valid) {
+                cfg.sensors[i].id = discovered[i].id;
+                cfg.sensors[i].pressure = discovered[i].pressure;
+                cfg.sensors[i].temperature = discovered[i].temperature;
+                cfg.sensors[i].flags = 0x01;  // enabled
+                applied++;
+            }
+        }
+        saveConfig();
+        char logBuf[64];
+        snprintf(logBuf, sizeof(logBuf), "Applied %d discovered sensors", applied);
+        sendLog(logBuf);
+    }
+    else if (strcmp(cmdName, "license") == 0) {
+        char keyStr[16] = {0};
+        if (jsonGetString(cmd, "key", keyStr, sizeof(keyStr)) && strlen(keyStr) == 8) {
+            // Упрощённая проверка: принимаем любой 8-символьный hex ключ
+            uint32_t keyVal = (uint32_t)strtoul(keyStr, NULL, 16);
+            cfg.license_key[0] = (keyVal >> 24) & 0xFF;
+            cfg.license_key[1] = (keyVal >> 16) & 0xFF;
+            cfg.license_key[2] = (keyVal >> 8) & 0xFF;
+            cfg.license_key[3] = keyVal & 0xFF;
+            licenseValid = 2;
+            saveConfig();
+            sendLog("License activated");
+        } else {
+            sendLog("Invalid license key");
+        }
+    }
+    else if (cmdName[0] == 't' && cmdName[1] == 'x' && cmdName[2] >= '1' && cmdName[2] <= '4') {
+        // tx1, tx2, tx3, tx4 - отправка одного датчика
+        uint8_t idx = cmdName[2] - '1';
+        if (cfg.tx_enabled) cfg.tx_enabled = 0;  // останавливаем авто-TX
+        if (snifferActive) sniffer_stop();
+        send_pmv107j_sensor(idx);
+    }
+    else {
+        char logBuf[64];
+        snprintf(logBuf, sizeof(logBuf), "Unknown command: %s", cmdName);
+        sendLog(logBuf);
+    }
+}
+
+// =========================================================================
+// Настройка BLE
+// =========================================================================
+static void setupBLE() {
+    Bluefruit.begin();
+    Bluefruit.setTxPower(4);    // Check valid values for the board
+    Bluefruit.setName("TPMS-NRF52840");
+
+    // Configure and Start Device Information Service
+    bledis.setManufacturer("TPMS-Emulator");
+    bledis.setModel("nRF52840+CC1101");
+    bledis.begin();
+
+    // Configure and Start BLE Uart Service
+    bleuart.begin();
+
+    // Set up advertising
+    Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+    Bluefruit.Advertising.addTxPower();
+    Bluefruit.Advertising.addService(bleuart);
+
+    // Secondary Scan Response packet (optional)
+    Bluefruit.ScanResponse.addName();
+
+    Bluefruit.Advertising.restartOnDisconnect(true);
+    Bluefruit.Advertising.setInterval(160, 160);  // in unit of 0.625 ms
+    Bluefruit.Advertising.setFastTimeout(30);
+    Bluefruit.Advertising.start(0);               // 0 = Don't stop advertising after n seconds
+}
+
+// =========================================================================
+// Индикация светодиодом
+// =========================================================================
+static void blinkLed(uint8_t times, uint16_t delayMs) {
+    pinMode(PIN_STATUS_LED, OUTPUT);
+    for (uint8_t i = 0; i < times; i++) {
+        digitalWrite(PIN_STATUS_LED, HIGH);
+        delay(delayMs);
+        digitalWrite(PIN_STATUS_LED, LOW);
+        delay(delayMs);
+    }
+}
+
+// =========================================================================
+// SETUP
+// =========================================================================
+void setup() {
+    // Инициализация Serial (для отладки)
+    Serial.begin(115200);
+
+    // LED
+    pinMode(PIN_STATUS_LED, OUTPUT);
+    digitalWrite(PIN_STATUS_LED, LOW);
+
+    // CC1101 питание
+    cc1101PowerOn();
+
+    // Загрузка конфигурации
+    InternalFS.begin();
+    loadConfig();
+
+    // Инициализация BLE (до CC1101, так как Bluetooth тоже использует радиочастоту)
+    setupBLE();
+
+    // Инициализация CC1101
+    if (!radio.init()) {
+        sendLog("CC1101 init FAILED!");
+        blinkLed(10, 100);
+    } else {
+        sendLog("CC1101 initialized OK");
+        // Настраиваем частоту из конфига
+        uint32_t freqHz = (cfg.freq == 433) ? 433000000UL : 315000000UL;
+        radio.setFreq(freqHz);
+        radio.setPA(cfg.power);
+
+        // Режим: IDLE (ждём команд через BLE)
+        radio.setIdleState();
+    }
+
+    // BLE RX callback
+    bleuart.setRxCallback(bleRxCallback);
+
+    // Стартовая индикация
+    blinkLed(3, 200);
+    sendLog("TPMS-NRF52840 ready");
+    sendStatus();
+}
+
+// =========================================================================
+// MAIN LOOP
+// =========================================================================
 void loop() {
-    sniffer_loop();
-    runAutoTx();
-
-    // Process deferred BLE command outside interrupt context
-    if (bleCommandReady) {
-        bleCommandReady = false;
-        String cmd = bleCommandBuffer;
-        bleCommandBuffer = "";
-        processCommand(cmd);
+    // 1. Обработка BLE команд
+    if (cmdBufLen > 0 && (cmdBuf[cmdBufLen - 1] == '}' || cmdBuf[cmdBufLen - 1] == '\n')) {
+        cmdBuf[cmdBufLen] = 0;
+        processCommand(cmdBuf);
+        cmdBufLen = 0;
     }
 
-    // LED blink heartbeat
-    static uint32_t lastLed = 0;
-    if (millis() - lastLed > 1000) {
-        lastLed = millis();
-        digitalWrite(PIN_LED_STATUS, !digitalRead(PIN_LED_STATUS));
+    // 2. Сниффер
+    if (snifferActive) {
+        sniffer_loop();
     }
 
-    // Trial time tracking
-    static uint32_t lastTrialUpdate = 0;
-    if (!is_licensed()) {
-        uint32_t now = millis();
-        if (now - lastTrialUpdate >= 30000) {
-            uint32_t elapsed = (now - lastTrialUpdate) / 1000;
-            if (elapsed > 0) add_trial_seconds(elapsed);
-            lastTrialUpdate = now;
+    // 3. Авто-TX
+    if (cfg.tx_enabled && !snifferActive) {
+        uint32_t now = millis() / 1000;
+        if (now - lastAutoTx >= cfg.tx_interval) {
+            lastAutoTx = now;
+            for (uint8_t i = 0; i < cfg.tx_packets; i++) {
+                for (uint8_t s = 0; s < MAX_SENSORS; s++) {
+                    if (cfg.sensors[s].flags & 0x01) {
+                        send_pmv107j_sensor(s);
+                        delay(30);
+                    }
+                }
+                if (i < cfg.tx_packets - 1) delay(100);
+            }
         }
-        if (is_trial_expired()) {
-            if (snifferActive) sniffer_stop();
-        }
+    }
+
+    // 4. Проверка батареи
+    if (isBatteryCritical() && cfg.tx_enabled) {
+        cfg.tx_enabled = 0;
+        if (snifferActive) sniffer_stop();
+        radio.setIdleState();
+        sendLog("Battery critical! Stopped.");
+        blinkLed(5, 500);
+
+        // Спим для экономии
+        delay(5000);
+    }
+
+    // 5. LED индикация при передаче
+    static uint32_t lastBlink = 0;
+    if (cfg.tx_enabled && (millis() - lastBlink > 1000)) {
+        lastBlink = millis();
+        digitalWrite(PIN_STATUS_LED, !digitalRead(PIN_STATUS_LED));
     }
 
     delay(1);
