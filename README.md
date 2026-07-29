@@ -17,6 +17,8 @@
 
 Интерактивная схема: [CirKit Designer](https://app.cirkitdesigner.com/project/575cfbdc-09af-448e-aea8-c7e6fbed4fae)
 
+![Схема подключения CC1101](docs/circuit_image.png)
+
 | Сигнал | Feather D | nRF52840 GPIO | **Метка на плате** |
 |--------|-----------|---------------|---------------------|
 | MISO   | D29       | P0.17         | **017**             |
