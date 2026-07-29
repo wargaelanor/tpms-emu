@@ -258,6 +258,7 @@ class MainActivity : AppCompatActivity() {
             log("Нет разрешения на подключение")
             return
         }
+        disconnect()
         binding.tvConnectionState.text = "Подключение..."
         binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_blue_light))
         bluetoothGatt = device.connectGatt(this, false, gattCallback)
@@ -297,6 +298,8 @@ class MainActivity : AppCompatActivity() {
                 isNusReady = false
                 pendingMessages.clear()
                 rxBuffer.clear()
+                gatt?.close()
+                if (gatt == bluetoothGatt) bluetoothGatt = null
                 runOnUiThread {
                     isConnected = false
                     updateConnectionState()
@@ -389,13 +392,19 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "onCharacteristicWrite status=$status uuid=${characteristic?.uuid}")
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 runOnUiThread { log("Ошибка записи: $status") }
+                isSendingChunks = false
+                pendingChunks.clear()
+            } else if (isSendingChunks && pendingChunks.isNotEmpty()) {
+                sendNextChunk()
             } else {
+                isSendingChunks = false
                 sendNextPending()
             }
         }
     }
 
     private fun onNusReady() {
+        if (isNusReady) return
         isNusReady = true
         runOnUiThread { log("NUS готов к передаче") }
         sendCommand("\"cmd\":\"status\"")
@@ -410,6 +419,9 @@ class MainActivity : AppCompatActivity() {
         sendCommandInternal(next)
     }
 
+    private val pendingChunks = mutableListOf<Byte>()
+    private var isSendingChunks = false
+
     private fun sendCommandInternal(payload: String) {
         val msg = "{$payload}\n"
         val rx = rxCharacteristic
@@ -423,10 +435,35 @@ class MainActivity : AppCompatActivity() {
             Log.w(TAG, "sendCommandInternal: no BLUETOOTH_CONNECT permission")
             return
         }
-        rx.value = msg.toByteArray(Charsets.UTF_8)
-        val ok = bluetoothGatt?.writeCharacteristic(rx) ?: false
-        Log.d(TAG, "TX: $msg ok=$ok")
-        runOnUiThread { log("→ $msg") }
+        val bytes = msg.toByteArray(Charsets.UTF_8)
+        val chunkSize = 20
+        if (bytes.size <= chunkSize) {
+            rx.value = bytes
+            val ok = bluetoothGatt?.writeCharacteristic(rx) ?: false
+            Log.d(TAG, "TX: $msg ok=$ok")
+            runOnUiThread { log("→ $msg") }
+        } else {
+            pendingChunks.clear()
+            pendingChunks.addAll(bytes.toList())
+            isSendingChunks = false
+            Log.d(TAG, "TX chunked (${bytes.size} bytes in ${(bytes.size + chunkSize - 1) / chunkSize} chunks): $msg")
+            runOnUiThread { log("→ $msg (${bytes.size}b)") }
+            sendNextChunk()
+        }
+    }
+
+    private fun sendNextChunk() {
+        if (pendingChunks.isEmpty()) {
+            isSendingChunks = false
+            return
+        }
+        val rx = rxCharacteristic ?: return
+        val chunkSize = 20
+        val chunk = pendingChunks.take(chunkSize).toByteArray()
+        pendingChunks.subList(0, minOf(chunkSize, pendingChunks.size)).clear()
+        isSendingChunks = true
+        rx.value = chunk
+        bluetoothGatt?.writeCharacteristic(rx)
     }
 
     private fun sendCommand(payload: String) {
