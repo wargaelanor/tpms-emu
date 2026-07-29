@@ -115,9 +115,9 @@ void CC1101::init() {
     SPI.pins(14, 13, 12, -1);
 #elif defined(ARDUINO_ARCH_NRF52) || defined(NRF52840_XXAA) || defined(ARDUINO_NRF52_ADAFRUIT)
     // nRF52840 (ProMicro nRF52840 V1940 / Nice!Nano clone, Feather variant):
-    //   MISO=D46(P0.29="029"), SCK=D3(P1.04="104"), MOSI=D48(P0.31="031")
+    //   MISO=D29(P0.17="017"), SCK=D21(P0.31="031"), MOSI=D20(P0.29="029")
     //   CS is handled manually via digitalWrite
-    SPI.setPins(46, 3, 48);
+    SPI.setPins(29, 21, 20);
     SPI.begin();
 #else
     // ESP32-C3 FSPI: SCK=GPIO2, MISO=GPIO3, MOSI=GPIO1
