@@ -7,15 +7,15 @@
  * Protocol: PMV-107J (Pacific Industrial) on 315 MHz / 433 MHz
  *
  * Pinout (ProMicro nRF52840 V1940 / Nice!Nano clone, Feather variant):
- *   Custom SPI MISO -> D46 (P0.29, labeled "029" on board)
- *   Custom SPI MOSI -> D48 (P0.31, labeled "031" on board)
- *   Custom SPI SCK  -> D3  (P1.04, labeled "104" on board)
- *   CC1101 CS       -> D25 (P0.06, labeled "006" on board)
- *   CC1101 GDO0     -> D27 (P0.08, labeled "008" on board)
- *   CC1101 GDO2     -> D10 (P1.13, labeled "113" on board)
- *   CC1101 POWER    -> D8  (P1.11, labeled "111" on board)
- *   Status LED      -> D12 (P1.15, labeled "115" on board)
- *   Battery ADC     -> 2   (P0.02, labeled "002" on board, AIN0)
+ *   Custom SPI MISO -> D29 (P0.17, labeled "017" on board)
+ *   Custom SPI MOSI -> D20 (P0.29, labeled "029" on board)
+ *   Custom SPI SCK  -> D21 (P0.31, labeled "031" on board)
+ *   CC1101 CS       -> D2  (P0.10, labeled "010" on board)
+ *   CC1101 GDO0     -> D11 (P0.06, labeled "006" on board)
+ *   CC1101 GDO2     -> D12 (P0.08, labeled "008" on board)
+ *   CC1101 POWER    -> D28 (P0.20, labeled "020" on board)
+ *   Status LED      -> D24 (P0.15, onboard LED)
+ *   Battery ADC     -> A4  (P0.02, labeled "002" on board, AIN4)
  *
  * NOTE: ProMicro nRF52840 V1940 may have different physical pin labels.
  * Adjust macros below to match your wiring.
@@ -31,17 +31,15 @@
 
 using namespace Adafruit_LittleFS_Namespace;
 
-static const char *CONFIG_FILENAME = "/tpms_config.bin";
-
 // ============================================================================
 // Pin Definitions (ProMicro nRF52840 V1940 / Nice!Nano clone)
 // ============================================================================
-#define PIN_CC1101_CS      25   // D25 = P0.06 (labeled "006" on board)
-#define PIN_CC1101_GDO0    27   // D27 = P0.08 (labeled "008" on board)
-#define PIN_CC1101_GDO2    10   // D10 = P1.13 (labeled "113" on board)
-#define PIN_CC1101_POWER   8    // D8  = P1.11 (labeled "111" on board)
-#define PIN_LED_STATUS     12   // D12 = P1.15 (labeled "115" on board)
-#define PIN_BATTERY_ADC    2    // P0.02 = AIN0 (labeled "002" on board)
+#define PIN_CC1101_CS      2    // D2  = P0.10 (labeled "010" on board)
+#define PIN_CC1101_GDO0    11   // D11 = P0.06 (labeled "006" on board)
+#define PIN_CC1101_GDO2    12   // D12 = P0.08 (labeled "008" on board)
+#define PIN_CC1101_POWER   28   // D28 = P0.20 (labeled "020" on board)
+#define PIN_LED_STATUS     24   // D24 = P0.15 (onboard LED)
+#define PIN_BATTERY_ADC    A4   // D18 = P0.02 (labeled "002" on board, AIN4)
 
 // ============================================================================
 // Configuration Constants
@@ -100,19 +98,21 @@ static void ee_write16(int off, uint16_t v) {
 }
 
 static void eeprom_load() {
-    File f(InternalFS);
-    if (f.open(CONFIG_FILENAME, FILE_O_READ)) {
+    memset(ee_buf, 0xFF, EE_TOTAL);
+    File f = InternalFS.open("tpms_cfg", FILE_O_READ);
+    if (f) {
         f.read(ee_buf, EE_TOTAL);
         f.close();
-    } else {
-        memset(ee_buf, 0xFF, EE_TOTAL);
     }
 }
 
 static void eeprom_commit() {
-    File f(InternalFS);
-    if (f.open(CONFIG_FILENAME, FILE_O_WRITE)) {
+    InternalFS.remove("tpms_cfg");
+    File f = InternalFS.open("tpms_cfg", FILE_O_WRITE);
+    if (f) {
+        f.seek(0);
         f.write(ee_buf, EE_TOTAL);
+        f.truncate();
         f.close();
     }
 }
@@ -243,6 +243,8 @@ const uint32_t DEFAULT_SENSOR_IDS[TPMS_NUM_SENSORS] = {
 
 const char* SENSOR_LABELS[TPMS_NUM_SENSORS] = { "PL", "PP", "ZL", "ZP" };
 
+static char dbg_last_id[96] = "";
+
 // Function prototypes
 void init_config();
 void load_config();
@@ -275,6 +277,8 @@ void uartBroadcastStatus();
 // Deferred command processing from BLE callback to main loop
 static String bleCommandBuffer;
 static volatile bool bleCommandReady = false;
+
+
 
 // Bit helpers
 static inline void set_bit(uint8_t *buf, uint16_t pos, bool val) {
@@ -917,6 +921,7 @@ static String buildStatusJson() {
         bool en = s->flags & 0x01;
         char idBuf[9];
         snprintf(idBuf, sizeof(idBuf), "%08lx", (unsigned long)s->sensor_id);
+        uartSendLog("[DBG] status sensor " + String(i) + " id=" + String(idBuf));
         json += "{\"id\":\"" + String(idBuf) + "\",\"pressure\":" + String(s->pressure_kpa)
              + ",\"temp\":" + String(s->temperature_c) + ",\"enabled\":" + (en ? "true" : "false") + "}";
     }
@@ -945,7 +950,19 @@ static String buildStatusJson() {
         json += "{\"id\":\"" + String(idBuf) + "\",\"p\":" + String(sniffer_sensors[i].pressure_kpa)
              + ",\"t\":" + String(sniffer_sensors[i].temperature_c) + "}";
     }
-    json += "]}}}";
+    json += "]";
+
+    File df = InternalFS.open("tpms_cfg", FILE_O_READ);
+    if (df) {
+        uint8_t tmp[EE_SENSORS+4];
+        df.read(tmp, sizeof(tmp));
+        df.close();
+        json += ",\"debug\":{\"magic\":\"0x" + String(tmp[EE_MAGIC], HEX) + "\",\"id0\":\"0x" + String(tmp[EE_SENSORS+3], HEX) + String(tmp[EE_SENSORS+2], HEX) + String(tmp[EE_SENSORS+1], HEX) + String(tmp[EE_SENSORS], HEX) + "\",\"last\":\"" + String(dbg_last_id) + "\"}";
+    } else {
+        json += ",\"debug\":{\"error\":\"no file\"}";
+    }
+
+    json += "}}}";
     return json;
 }
 
@@ -989,6 +1006,7 @@ void uartBroadcastStatus() {
 // BLE UART Command Processor
 // ============================================================================
 void processCommand(const String &msg) {
+    uartSendLog("[DBG] MSG(len=" + String(msg.length()) + ")");
     String cmd = jsonGetString(msg, "cmd");
     cmd.trim();
 
@@ -1058,7 +1076,23 @@ void processCommand(const String &msg) {
         int sensorIdx = (int)jsonGetLong(msg, "sensor");
         if (sensorIdx >= 0 && sensorIdx < TPMS_NUM_SENSORS) {
             String idStr = jsonGetString(msg, "id");
-            if (idStr.length() > 0) config.sensors[sensorIdx].sensor_id = (uint32_t)strtoul(idStr.c_str(), NULL, 16);
+            if (idStr.length() > 0) {
+                bool valid = true;
+                for (int i = 0; i < idStr.length() && i < 8; i++) {
+                    if (!isxdigit(idStr[i])) { valid = false; break; }
+                }
+                dbg_last_id[0] = 0;
+                snprintf(dbg_last_id, sizeof(dbg_last_id), "id=%s len=%d valid=%s", idStr.c_str(), idStr.length(), (valid && idStr.length() <= 8) ? "Y" : "N");
+                uartSendLog("[DBG] idStr='" + idStr + "' len=" + String(idStr.length()) + " valid=" + String(valid ? "Y" : "N"));
+            if (valid && idStr.length() <= 8) {
+                    config.sensors[sensorIdx].sensor_id = (uint32_t)strtoul(idStr.c_str(), NULL, 16);
+                    snprintf(dbg_last_id, sizeof(dbg_last_id), "id=%s parsed=0x%08lx", idStr.c_str(), (unsigned long)config.sensors[sensorIdx].sensor_id);
+                    uartSendLog("[DBG] SET sensor_id=0x" + String(config.sensors[sensorIdx].sensor_id, HEX));
+                } else {
+                    snprintf(dbg_last_id, sizeof(dbg_last_id), "id=%s len=%d REJECTED", idStr.c_str(), idStr.length());
+                    uartSendLog("[DBG] NOT setting sensor_id");
+                }
+            }
             long p = jsonGetLong(msg, "pressure");
             if (msg.indexOf("\"pressure\"") >= 0) config.sensors[sensorIdx].pressure_kpa = (uint8_t)p;
             long t = jsonGetLong(msg, "temp");
@@ -1126,7 +1160,7 @@ void bleuart_rx_callback(uint16_t conn_handle) {
             if (bleCommandBuffer.length() > 0) {
                 bleCommandReady = true;
             }
-        } else if (bleCommandBuffer.length() < 512) {
+        } else if (!bleCommandReady && bleCommandBuffer.length() < 512) {
             bleCommandBuffer += c;
         }
     }
@@ -1153,26 +1187,24 @@ void setup() {
     pinMode(PIN_CC1101_POWER, OUTPUT);
     digitalWrite(PIN_CC1101_POWER, LOW);
 
-    if (InternalFS.begin()) {
-        load_config();
-    } else {
-        init_config();
-    }
-
-    autoTxEnabled = true;
-    config.tx_enabled = 1;
-    if (autoTxInterval < 5) autoTxInterval = 5;
-
-    // BLE init
+    // BLE init FIRST — needed by InternalFS flash operations (SoftDevice event callback)
     Bluefruit.begin();
     Bluefruit.setName("TPMS-NRF52840");
     Bluefruit.setTxPower(4);
     Bluefruit.Periph.begin();
 
+    // InternalFS init SECOND — may format flash on first boot, uses SoftDevice flash API
+    InternalFS.begin();
+
     bleUart.begin();
     bleUart.setRxCallback(bleuart_rx_callback);
 
-    startAdv();
+    // Load config from InternalFS
+    load_config();
+
+    autoTxEnabled = true;
+    config.tx_enabled = 1;
+    if (autoTxInterval < 5) autoTxInterval = 5;
 
     // CC1101
     cc1101_power_on();
@@ -1180,8 +1212,11 @@ void setup() {
 
     autoTxLastMs = millis();
 
+    // Start advertising LAST — after all init is done
+    startAdv();
+
     digitalWrite(PIN_LED_STATUS, LOW);
-    uartSendLog("[SETUP] TPMS nRF52840 ready");
+    uartSendLog("[SETUP] TPMS nRF52840 v2 ready");
 }
 
 void loop() {
