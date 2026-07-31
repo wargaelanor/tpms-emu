@@ -111,23 +111,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
-        binding.btnScan.setOnClickListener { startScan() }
-        binding.btnConnect.setOnClickListener {
-            if (isConnected) disconnect()
-            else selectedDevice?.let { connect(it) }
-        }
         binding.btnBurst.setOnClickListener { sendCommand("\"cmd\":\"burst\"") }
-        binding.btnAutoTx.setOnClickListener {
-            val cmd = if (isAutoTx) "\"cmd\":\"stop\"" else "\"cmd\":\"tx\""
-            sendCommand(cmd)
-        }
         binding.btnSaveAutoTx.setOnClickListener {
-            val interval = binding.etInterval.text.toString().toIntOrNull() ?: 300
+            val interval = binding.etInterval.text.toString().toIntOrNull() ?: 360
             val packets = binding.etPackets.text.toString().toIntOrNull() ?: 2
-            sendCommand("\"cmd\":\"autotx\",\"enabled\":$isAutoTx,\"interval\":$interval,\"packets\":$packets")
+            sendCommand("\"cmd\":\"autotx\",\"interval\":$interval,\"packets\":$packets")
         }
-        binding.btnSniffStart.setOnClickListener { sendCommand("\"cmd\":\"sniff_start\"") }
-        binding.btnSniffStop.setOnClickListener { sendCommand("\"cmd\":\"sniff_stop\"") }
+        var sniffRunning = false
+        binding.btnSniffToggle.setOnClickListener {
+            sniffRunning = !sniffRunning
+            binding.btnSniffToggle.text = if (sniffRunning) "Стоп" else "Старт"
+            sendCommand(if (sniffRunning) "\"cmd\":\"sniff_start\"" else "\"cmd\":\"sniff_stop\"")
+        }
         binding.btnSniffApply.setOnClickListener { sendCommand("\"cmd\":\"sniff_apply\"") }
         binding.btnSaveFreq.setOnClickListener {
             val freq = if (binding.rb433.isChecked) 433 else 315
@@ -179,7 +174,6 @@ class MainActivity : AppCompatActivity() {
         }
         foundDevices.clear()
         selectedDevice = null
-        binding.btnConnect.isEnabled = false
         binding.tvConnectionState.text = "Сканирование..."
         binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_blue_light))
 
@@ -246,10 +240,9 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Выберите устройство")
             .setItems(items) { _, which ->
                 selectedDevice = foundDevices[which]
-                binding.btnConnect.isEnabled = true
-                binding.btnConnect.text = "Подключить"
                 binding.tvConnectionState.text = "Выбрано: ${foundDevices[which].name}"
                 binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_blue_light))
+                connect(foundDevices[which])
             }
             .setNegativeButton("Отмена", null)
             .show()
@@ -310,8 +303,9 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     isConnected = false
                     updateConnectionState()
-                    log("BLE отключен")
+                    log("BLE отключен, переподключение...")
                 }
+                handler.postDelayed({ tryAutoConnect() }, 3000)
             }
         }
 
@@ -557,8 +551,7 @@ class MainActivity : AppCompatActivity() {
         binding.rb433.isChecked = freq == 433
 
         isAutoTx = data.optInt("tx_en", 0) == 1
-        binding.btnAutoTx.text = if (isAutoTx) "Стоп" else "Старт"
-        binding.etInterval.setText(data.optInt("tx_int", 300).toString())
+        binding.etInterval.setText(data.optInt("tx_int", 360).toString())
         binding.etPackets.setText(data.optInt("tx_pkt", 2).toString())
 
         val licensed = data.optInt("license", 0) == 1
@@ -596,21 +589,17 @@ class MainActivity : AppCompatActivity() {
         if (isConnected) {
             binding.tvConnectionState.text = "Подключено: ${selectedDevice?.name ?: selectedDevice?.address}"
             binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_green_light))
-            binding.btnConnect.text = "Отключить"
         } else {
-            binding.tvConnectionState.text = "Отключено"
-            binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_red_light))
-            binding.btnConnect.text = "Подключить"
-            binding.btnConnect.isEnabled = selectedDevice != null
+            binding.tvConnectionState.text = "Поиск устройства..."
+            binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_orange_light))
         }
     }
 
     private fun log(msg: String) {
         val text = binding.tvLog
         text.append("$msg\n")
-        (text.parent as? ScrollView)?.post {
-            (text.parent as ScrollView).fullScroll(View.FOCUS_DOWN)
-        }
+        val scrollView = text.parent as? android.widget.ScrollView ?: return
+        scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

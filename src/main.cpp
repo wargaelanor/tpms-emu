@@ -10,18 +10,15 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <bluefruit.h>
-#include <Adafruit_LittleFS.h>
-#include <InternalFileSystem.h>
 
 #include "CC1101.h"
+#include "flash/flash_nrf5x.h"
 
 extern "C" {
 #include "nrf_sdm.h"
 #include "nrf_gpio.h"
 #include "nrf_soc.h"
 }
-
-using namespace Adafruit_LittleFS_Namespace;
 
 // =========================================================================
 // Pin Mapping - ProMicro nRF52840 V1940
@@ -51,7 +48,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #define DEFAULT_DATARATE     10000  // 10 kbaud
 #define DEFAULT_DEVIATION    38000  // 38 kHz
 #define DEFAULT_POWER        7      // PA table index 0-7 (7 = 10 dBm max for 315 MHz)
-#define DEFAULT_INTERVAL     300    // секунд между burst
+#define DEFAULT_INTERVAL     360    // секунд между burst
 #define DEFAULT_PACKETS      2      // пакетов за burst
 #define TRIAL_SECONDS        86400  // 24 часа
 #define BLE_CHUNK_SIZE       20     // макс. байт за BLE пакет
@@ -103,7 +100,17 @@ struct DiscoveredSensor {
 static CC1101 radio(PIN_CC1101_CS, PIN_CC1101_GDO0, PIN_CC1101_GDO2);
 static TPMSConfig cfg;
 static DiscoveredSensor discovered[MAX_SENSORS];
-static File file(InternalFS);
+
+// Flash config storage - last page of 1MB flash (page 255)
+#define CONFIG_FLASH_PAGE  255
+#define CONFIG_FLASH_ADDR  (CONFIG_FLASH_PAGE * 4096)
+#define CONFIG_FLASH_MAGIC 0x54504D43  // "TPMC"
+
+typedef struct {
+    uint32_t magic;
+    TPMSConfig cfg;
+    uint32_t checksum;
+} FlashConfig;
 
 // BLE
 static BLEDis  bledis;
@@ -118,6 +125,7 @@ static bool snifferActive = false;
 static uint32_t lastAutoTx = 0;
 static uint32_t trialStartTime = 0;
 static uint32_t licenseValid = 0; // 0 = no license, 1 = trial, 2 = full
+static volatile bool configDirty = false;
 
 // BLE power management
 static bool bleConnected = false;
@@ -240,19 +248,51 @@ static void sendLog(const char *msg) {
     bleSendChunked(buf);
 }
 
+static uint32_t calcFlashChecksum(const TPMSConfig *c) {
+    uint32_t sum = 0;
+    const uint32_t *p = (const uint32_t *)c;
+    for (size_t i = 0; i < sizeof(TPMSConfig) / 4; i++) {
+        sum ^= p[i];
+    }
+    return sum;
+}
+
+static bool saveConfig() {
+    cfg.trial_start = trialStartTime;
+
+    FlashConfig fc;
+    fc.magic = CONFIG_FLASH_MAGIC;
+    fc.cfg = cfg;
+    fc.checksum = calcFlashChecksum(&cfg);
+
+    if (!flash_nrf5x_erase(CONFIG_FLASH_ADDR)) {
+        sendLog("Flash erase FAILED");
+        return false;
+    }
+
+    int written = flash_nrf5x_write(CONFIG_FLASH_ADDR, &fc, sizeof(FlashConfig));
+    if (written != (int)sizeof(FlashConfig)) {
+        sendLog("Flash write FAILED");
+        return false;
+    }
+
+    return true;
+}
+
 // =========================================================================
 // CRC-8 для PMV-107J: полином 0x13, init 0x00
 // =========================================================================
-static uint8_t calculate_crc8_pmv(const uint8_t *bits, uint16_t bitLen) {
+static uint8_t calculate_crc8_pmv(const uint8_t *data, uint8_t len) {
     uint8_t crc = 0x00;
-    // Обрабатываем первые 58 бит (до поля CRC)
-    uint16_t crcBits = (bitLen > 58) ? 58 : bitLen;
-
-    for (uint16_t i = 0; i < crcBits; i++) {
-        uint8_t bit = get_bit(bits, i);
-        uint8_t fb = crc ^ bit;
-        crc >>= 1;
-        if (fb & 1) crc ^= 0x8C;  // реверс полинома 0x13 -> 0x8C
+    for (uint8_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x80) {
+                crc = (crc << 1) ^ 0x13;
+            } else {
+                crc = crc << 1;
+            }
+        }
     }
     return crc;
 }
@@ -338,13 +378,7 @@ static uint16_t build_pmv107j_payload(uint8_t *outBits, uint32_t sensorId,
         }
     }
     // Compute CRC-8 with polynomial 0x13, init 0
-    uint8_t crcVal = 0;
-    for (int i = 0; i < 64; i++) {
-        uint8_t bit = (crcBytes[i / 8] >> (7 - (i % 8))) & 1;
-        uint8_t fb = crcVal ^ bit;
-        crcVal >>= 1;
-        if (fb & 1) crcVal ^= 0x8C;  // reflected poly for MSB-first processing
-    }
+    uint8_t crcVal = calculate_crc8_pmv(crcBytes, 8);
 
     // CRC in bits 58-65
     for (int i = 0; i < 8; i++) {
@@ -522,7 +556,7 @@ static void sendBurst() {
     for (uint8_t i = 0; i < MAX_SENSORS; i++) {
         if (cfg.sensors[i].flags & 0x01) {
             send_pmv107j_sensor(i);
-            delay(50);  // пауза между датчиками
+            delay(300);  // пауза между датчиками
         }
     }
     sendLog("Burst done");
@@ -661,7 +695,7 @@ static bool sniffer_decode_packet(const uint8_t *data, uint8_t len,
             payload58[i / 8] |= (1 << (7 - (i % 8)));
         }
     }
-    crcCalc = calculate_crc8_pmv(payload58, 58);
+    crcCalc = calculate_crc8_pmv(payload58, 8);
 
     for (int i = 0; i < 8; i++) {
         if (get_bit(dmBits, payloadStart + 58 + i)) {
@@ -797,7 +831,7 @@ static void setDefaultConfig() {
     cfg.deviation = DEFAULT_DEVIATION / 100;
     cfg.power = DEFAULT_POWER;
     cfg.manch_en = 1;
-    cfg.tx_enabled = 0;
+    cfg.tx_enabled = 1;
     cfg.tx_interval = DEFAULT_INTERVAL;
     cfg.tx_packets = DEFAULT_PACKETS;
     cfg.freq = DEFAULT_FREQ_315;
@@ -813,55 +847,34 @@ static void setDefaultConfig() {
 }
 
 static bool loadConfig() {
-    InternalFS.begin();
+    FlashConfig *fc = (FlashConfig *)CONFIG_FLASH_ADDR;
 
-    if (!file.open(CONFIG_FILENAME, FILE_O_READ)) {
-        sendLog("Config not found, using defaults");
+    if (fc->magic != CONFIG_FLASH_MAGIC) {
+        sendLog("No config in flash, using defaults");
         setDefaultConfig();
         saveConfig();
         return false;
     }
 
-    TPMSConfig tmp;
-    size_t readLen = file.read(&tmp, sizeof(tmp));
-    file.close();
-
-    if (readLen != sizeof(tmp) || tmp.magic != CONFIG_MAGIC) {
-        sendLog("Config corrupt, using defaults");
+    uint32_t expected = calcFlashChecksum(&fc->cfg);
+    if (expected != fc->checksum) {
+        sendLog("Config checksum bad, using defaults");
         setDefaultConfig();
         saveConfig();
         return false;
     }
 
-    memcpy(&cfg, &tmp, sizeof(cfg));
+    memcpy(&cfg, &fc->cfg, sizeof(cfg));
     trialStartTime = cfg.trial_start;
 
-    // Проверяем лицензию
     if (cfg.license_key[0] || cfg.license_key[1] || cfg.license_key[2] || cfg.license_key[3]) {
-        licenseValid = 2;  // полная лицензия
+        licenseValid = 2;
     } else if (trialStartTime > 0) {
         uint32_t elapsed = (millis() / 1000) - trialStartTime;
         licenseValid = (elapsed < TRIAL_SECONDS) ? 1 : 0;
     }
 
-    sendLog("Config loaded");
-    return true;
-}
-
-static bool saveConfig() {
-    InternalFS.begin();
-
-    cfg.trial_start = trialStartTime;
-
-    file.open(CONFIG_FILENAME, FILE_O_WRITE);
-    size_t written = file.write((const uint8_t *)&cfg, sizeof(cfg));
-    file.close();
-
-    if (written != sizeof(cfg)) {
-        sendLog("Config save FAILED");
-        return false;
-    }
-    InternalFS.end();
+    sendLog("Config loaded from flash");
     return true;
 }
 
@@ -995,20 +1008,13 @@ static void processCommand(const char *cmd) {
     else if (strcmp(cmdName, "burst") == 0) {
         sendBurst();
     }
-    else if (strcmp(cmdName, "tx") == 0) {
-        cfg.tx_enabled = 1;
-        lastAutoTx = millis() / 1000 - cfg.tx_interval;  // отправить сразу
-        sendLog("Auto-TX started");
-    }
     else if (strcmp(cmdName, "stop") == 0) {
-        cfg.tx_enabled = 0;
         if (snifferActive) sniffer_stop();
-        radio.setIdleState();
         sendLog("Stopped");
     }
     else if (strcmp(cmdName, "reset") == 0) {
         setDefaultConfig();
-        saveConfig();
+        configDirty = true;
         radio.setFreq(cfg.freq == 433 ? 433000000UL : 315000000UL);
         sendLog("Config reset to defaults");
     }
@@ -1040,25 +1046,23 @@ static void processCommand(const char *cmd) {
             cfg.sensors[sensorIdx].flags = (cfg.sensors[sensorIdx].flags & 0xFE) | (enabled ? 1 : 0);
         }
 
-        saveConfig();
+        configDirty = true;
         char logBuf[64];
         snprintf(logBuf, sizeof(logBuf), "Sensor %d updated", (int)sensorIdx);
         sendLog(logBuf);
     }
     else if (strcmp(cmdName, "autotx") == 0) {
-        bool enabled = false;
-        if (jsonGetBool(cmd, "enabled", &enabled)) {
-            cfg.tx_enabled = enabled ? 1 : 0;
-        }
+        cfg.tx_enabled = 1;  // всегда включён
         int32_t interval = 0;
         if (jsonGetInt(cmd, "interval", &interval)) {
-            cfg.tx_interval = (uint16_t)constrain(interval, 5, 900);
+            cfg.tx_interval = (uint16_t)constrain(interval, 1, 900);
         }
         int32_t packets = 0;
         if (jsonGetInt(cmd, "packets", &packets)) {
             cfg.tx_packets = (uint8_t)constrain(packets, 1, 20);
         }
-        saveConfig();
+        lastAutoTx = millis() / 1000 - cfg.tx_interval;  // send immediately
+        configDirty = true;
         sendLog("Auto-TX config updated");
     }
     else if (strcmp(cmdName, "settings") == 0) {
@@ -1083,12 +1087,12 @@ static void processCommand(const char *cmd) {
             cfg.power = (uint8_t)constrain(pwr, 0, 7);
             radio.setPA(cfg.power);
         }
-        saveConfig();
+        configDirty = true;
         sendLog("Settings applied");
     }
     else if (strcmp(cmdName, "sniff_start") == 0) {
         if (cfg.tx_enabled) {
-            cfg.tx_enabled = 0;
+    cfg.tx_enabled = 1;
         }
         sniffer_start();
     }
@@ -1106,7 +1110,7 @@ static void processCommand(const char *cmd) {
                 applied++;
             }
         }
-        saveConfig();
+        configDirty = true;
         char logBuf[64];
         snprintf(logBuf, sizeof(logBuf), "Applied %d discovered sensors", applied);
         sendLog(logBuf);
@@ -1121,7 +1125,7 @@ static void processCommand(const char *cmd) {
             cfg.license_key[2] = (keyVal >> 8) & 0xFF;
             cfg.license_key[3] = keyVal & 0xFF;
             licenseValid = 2;
-            saveConfig();
+            configDirty = true;
             sendLog("License activated");
         } else {
             sendLog("Invalid license key");
@@ -1130,7 +1134,6 @@ static void processCommand(const char *cmd) {
     else if (cmdName[0] == 't' && cmdName[1] == 'x' && cmdName[2] >= '1' && cmdName[2] <= '4') {
         // tx1, tx2, tx3, tx4 - отправка одного датчика
         uint8_t idx = cmdName[2] - '1';
-        if (cfg.tx_enabled) cfg.tx_enabled = 0;  // останавливаем авто-TX
         if (snifferActive) sniffer_stop();
         send_pmv107j_sensor(idx);
     }
@@ -1215,8 +1218,9 @@ void setup() {
     cc1101PowerOn();
 
     // Загрузка конфигурации
-    InternalFS.begin();
     loadConfig();
+    cfg.tx_enabled = 1;  // авто-TX всегда включён после старта
+    lastAutoTx = millis() / 1000 - cfg.tx_interval;  // отправить сразу при старте
 
     // Инициализация BLE (до CC1101, так как Bluetooth тоже использует радиочастоту)
     setupBLE();
@@ -1233,9 +1237,6 @@ void setup() {
     radio.setPA(cfg.power);
     radio.setDRate(cfg.datarate);
     radio.setDeviation((float)cfg.deviation / 10.0f);
-
-    // Спим до первого использования
-    cc1101Sleep();
 
     // BLE RX callback
     bleuart.setRxCallback(bleRxCallback);
@@ -1265,6 +1266,12 @@ void loop() {
         processCommand(cmdBuf);
         cmdBufLen = 0;
         cmdReady = false;
+    }
+
+    // 1.1 Отложенное сохранение конфига (не в BLE callback!)
+    if (configDirty) {
+        configDirty = false;
+        saveConfig();
     }
 
     // 2. Сниффер
