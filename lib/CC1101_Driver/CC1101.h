@@ -3,17 +3,12 @@
 
 /*
  * CC1101 Driver for nRF52840 + CC1101 TPMS project
- * Полный драйвер трансивера CC1101 через SPI
- * Поддержка 315 МГц и 433 МГц, 2-FSK/GFSK модуляция
  */
 
 #include <Arduino.h>
 #include <SPI.h>
 
-// =========================================================================
-// CC1101 Configuration Registers (0x00 - 0x2E)
-// =========================================================================
-
+// Configuration Registers
 #define CC1101_IOCFG2       0x00
 #define CC1101_IOCFG1       0x01
 #define CC1101_IOCFG0       0x02
@@ -62,10 +57,7 @@
 #define CC1101_TEST1        0x2D
 #define CC1101_TEST0        0x2E
 
-// =========================================================================
-// CC1101 Status Registers (0x30 - 0x3D)
-// =========================================================================
-
+// Status Registers
 #define CC1101_PARTNUM      0x30
 #define CC1101_VERSION      0x31
 #define CC1101_FREQEST      0x32
@@ -81,9 +73,7 @@
 #define CC1101_RCCTRL1_STATUS 0x3C
 #define CC1101_RCCTRL0_STATUS 0x3D
 
-// =========================================================================
 // Strobe Commands
-// =========================================================================
 #define CC1101_SRES         0x30
 #define CC1101_SFSTXON      0x31
 #define CC1101_SXOFF        0x32
@@ -98,9 +88,13 @@
 #define CC1101_SWORRST      0x3C
 #define CC1101_SNOP         0x3D
 
-// =========================================================================
+// FIFO addresses
+#define CC1101_TXFIFO       0x3F
+#define CC1101_RXFIFO       0x3F
+#define CC1101_TX_FIFO      CC1101_TXFIFO
+#define CC1101_RX_FIFO      CC1101_RXFIFO
+
 // MARC States
-// =========================================================================
 #define CC1101_MARCSTATE_SLEEP            0x00
 #define CC1101_MARCSTATE_IDLE             0x01
 #define CC1101_MARCSTATE_XOFF             0x02
@@ -125,32 +119,41 @@
 #define CC1101_MARCSTATE_RXTX_SWITCH      0x15
 #define CC1101_MARCSTATE_TXFIFO_UNDERFLOW 0x16
 
-// =========================================================================
-// CC1101 Class
-// =========================================================================
-
 class CC1101 {
 public:
     CC1101(uint8_t csPin, uint8_t gdo0Pin, uint8_t gdo2Pin);
 
-    bool    init();
+    void    init();
     void    reset();
     void    wakeUp();
 
     void    setFreq(uint32_t freqHz);
+    bool    setFreq(float frequency);
     void    setFreqConfig(uint8_t freq2, uint8_t freq1, uint8_t freq0);
-    void    setDRate(uint32_t baudRate);
-    void    setModulation(uint8_t modFormat);
-    void    setDeviation(uint32_t devHz);
-    void    setPA(uint8_t paIndex);
+    void    setFreqConfig(float frequency);
+    bool    setDRate(uint32_t baud);
+    bool    setModulation(uint8_t mod);
+    bool    setDeviation(float khz);
+    void    setPA(int8_t index);
     void    setPApower(int8_t dBm);
 
-    void    sendData(const uint8_t *data, uint8_t len);
+    void    setSyncWord(uint8_t syncH, uint8_t syncL);
+    void    setSyncMode(uint8_t mode);
+    void    setPktLength(uint8_t length);
+    void    setCrc(bool enable);
+    void    setWhiteData(bool enable);
+    void    setManc(uint8_t enable);
+    void    setPqt(uint8_t pqt);
+    void    setMHZOsc(float mhz);
+    void    setAddr(uint8_t addr);
+    void    setChannr(uint8_t ch);
+
+    bool    sendData(const uint8_t *data, uint8_t length);
     void    setTxState();
     void    setRxState();
     void    setIdleState();
 
-    uint8_t receiveData(uint8_t *buf, uint8_t maxLen);
+    bool    receiveData(uint8_t *data, uint8_t *length);
     void    setRxConfig();
 
     int8_t  getRssi();
@@ -158,6 +161,9 @@ public:
     uint8_t getMarcState();
     uint8_t getRxBytes();
     uint8_t getTxBytes();
+    uint8_t getChipState();
+    uint8_t getChipVersion();
+    uint8_t getPartNumber();
 
     uint8_t readReg(uint8_t reg);
     void    writeReg(uint8_t reg, uint8_t value);
@@ -166,18 +172,21 @@ public:
     void    readBurstReg(uint8_t reg, uint8_t *data, uint8_t len);
     void    sendCommand(uint8_t cmd);
 
-    uint8_t getChipVersion();
-    uint8_t getPartNumber();
     void    flushRxFifo();
     void    flushTxFifo();
+    void    printRegs();
 
 private:
     uint8_t _csPin;
     uint8_t _gdo0Pin;
     uint8_t _gdo2Pin;
+    float   _mhzOsc;
+    float   _currentFreq;
+    SPISettings _spiSettings;
 
-    void    select();
-    void    deselect();
+    void    spiSelect();
+    void    spiDeselect();
+    void    setSpiSettings();
     uint8_t spiTransfer(uint8_t data);
 };
 

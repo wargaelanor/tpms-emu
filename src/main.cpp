@@ -11,30 +11,38 @@
 #include <SPI.h>
 #include <bluefruit.h>
 #include <Adafruit_LittleFS.h>
-#include <InternalFS.h>
+#include <InternalFileSystem.h>
 
 #include "CC1101.h"
+
+extern "C" {
+#include "nrf_sdm.h"
+#include "nrf_gpio.h"
+#include "nrf_soc.h"
+}
 
 using namespace Adafruit_LittleFS_Namespace;
 
 // =========================================================================
 // Pin Mapping - ProMicro nRF52840 V1940
 // ВСЕ пины должны быть согласованы во ВСЕХ файлах проекта!
+// Note: PIN_SPI_MISO/MOSI/SCK are defined by board variant, we use our own names
 // =========================================================================
-#define PIN_SPI_MISO    29    // Arduino pin 29 = P0.17 (board label "017")
-#define PIN_SPI_MOSI    20    // Arduino pin 20 = P0.29 (board label "029")
-#define PIN_SPI_SCK     21    // Arduino pin 21 = P0.31 (board label "031")
+#define TPMS_PIN_SPI_MISO   29    // Arduino pin 29 = P0.17 (board label "017")
+#define TPMS_PIN_SPI_MOSI   20    // Arduino pin 20 = P0.29 (board label "029")
+#define TPMS_PIN_SPI_SCK    21    // Arduino pin 21 = P0.31 (board label "031")
 #define PIN_CC1101_CS   2     // Arduino pin 2  = P0.10 (board label "010")
 #define PIN_CC1101_GDO0 11    // Arduino pin 11 = P0.06 (board label "006")
 #define PIN_CC1101_GDO2 12    // Arduino pin 12 = P0.08 (board label "008")
 #define PIN_CC1101_PWR  28    // Arduino pin 28 = P0.20 (board label "020")
 #define PIN_STATUS_LED  24    // Arduino pin 24 = P0.15 (onboard LED)
 #define PIN_BATTERY_ADC 18    // Arduino pin 18 = P0.02 (board label "002"), AIN4
+#define PIN_WAKE_BTN    8     // Arduino pin 8  = P0.05 (board label "005"), wake button
 
 // =========================================================================
 // Конфигурация по умолчанию
 // =========================================================================
-#define CONFIG_MAGIC         0xB0
+#define CONFIG_MAGIC         0xB1
 #define CONFIG_FILENAME      "tpms_cfg"
 #define MAX_SENSORS          4
 #define MAX_PAYLOAD_BITS     72     // 66 бит payload + preamble
@@ -42,7 +50,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #define DEFAULT_FREQ_433     433
 #define DEFAULT_DATARATE     10000  // 10 kbaud
 #define DEFAULT_DEVIATION    38000  // 38 kHz
-#define DEFAULT_POWER        0x1E   // ~10 dBm
+#define DEFAULT_POWER        7      // PA table index 0-7 (7 = 10 dBm max for 315 MHz)
 #define DEFAULT_INTERVAL     300    // секунд между burst
 #define DEFAULT_PACKETS      2      // пакетов за burst
 #define TRIAL_SECONDS        86400  // 24 часа
@@ -103,13 +111,45 @@ static BLEUart bleuart;
 
 // Буфер команд
 static char cmdBuf[CMD_BUFFER_SIZE];
-static uint16_t cmdBufLen = 0;
+static volatile uint16_t cmdBufLen = 0;
 
 // Состояние
 static bool snifferActive = false;
 static uint32_t lastAutoTx = 0;
 static uint32_t trialStartTime = 0;
 static uint32_t licenseValid = 0; // 0 = no license, 1 = trial, 2 = full
+
+// BLE power management
+static bool bleConnected = false;
+static bool bleAdvertising = true;
+static uint32_t bleStartTime = 0;
+#define BLE_ADVERTISE_TIMEOUT_MS  60000  // 1 minute
+
+static void cc1101Sleep();
+
+static void enterDeepSleep() {
+    cc1101Sleep();
+    digitalWrite(PIN_STATUS_LED, LOW);
+    
+    // Stop BLE advertising (but keep SoftDevice alive for sd_power_system_off!)
+    Bluefruit.Advertising.stop();
+    
+    // Configure wake pin: button to GND, wake on LOW
+    pinMode(PIN_WAKE_BTN, INPUT_PULLUP_SENSE);
+    
+    // Disable SD event IRQ to prevent spurious wake
+    NVIC_DisableIRQ(SD_EVT_IRQn);
+    
+    // Enter System OFF via SoftDevice SVC (SD must be enabled!)
+    sd_power_system_off();
+    
+    while(1) { __WFE(); }
+}
+
+// Forward declarations
+static bool saveConfig();
+static void sniffer_stop();
+static void cc1101Sleep();
 
 // =========================================================================
 // Битовые хелперы
@@ -167,10 +207,21 @@ static void cc1101PowerOff() {
     digitalWrite(PIN_CC1101_PWR, LOW);
 }
 
+static void cc1101Sleep() {
+    // Temporarily disabled for TX debugging — replicating old behavior
+    // where CC1101 stays powered and configured after setup()
+    radio.sendCommand(CC1101_SIDLE);  // just go to IDLE
+}
+
+static void cc1101Wake() {
+    // No-op — CC1101 stays powered and configured from setup()
+}
+
 // =========================================================================
 // BLE helpers - chunked write для избежания FIFO overflow
 // =========================================================================
 static void bleSendChunked(const char *str) {
+    if (!bleConnected) return;  // don't send if not connected
     uint16_t len = strlen(str);
     uint16_t offset = 0;
     while (offset < len) {
@@ -208,79 +259,96 @@ static uint8_t calculate_crc8_pmv(const uint8_t *bits, uint16_t bitLen) {
 
 // =========================================================================
 // PMV-107J: построение 66-битного payload
-// Структура payload (66 бит):
-//   [0:27]   - ID (28 бит, LSB first)
-//   [28]     - флаг батареи (0=OK, 1=low)
-//   [29:30]  - счётчик (2 бита)
-//   [31:32]  - флаги (2 бита, обычно 0b11)
-//   [33:43]  - давление (11 бит, инвертированное)
-//   [44:54]  - давление (11 бит, прямое) = инверсия предыдущего
-//   [55:57]  - температура (3 бита, XOR 0b111)
-//   [58:65]  - CRC-8 (8 бит)
+// Matching rtl_433 decoder (tpms_pmv107j.c):
+//   Bits 0-27:  ID (28 bits, MSB first)
+//   Bits 28-33: Status (6 bits: battery_low, counter[1:0], unknown=0, rapid_change, failed)
+//   Bits 34-41: Pressure (8 bits = kPa/2.48 + 40)
+//   Bits 42-49: Inverted pressure (8 bits = pressure XOR 0xFF)
+//   Bits 50-57: Temperature (8 bits = Celsius + 40)
+//   Bits 58-65: CRC-8 (8 bits, poly 0x13, init 0)
 // =========================================================================
 static uint16_t build_pmv107j_payload(uint8_t *outBits, uint32_t sensorId,
                                        uint16_t pressure, int8_t temperature,
                                        uint8_t counter, uint8_t batFlag) {
-    // Очищаем массив
-    uint16_t totalBits = 16 + 6 + 66; // preamble(16) + sync(6) + payload(66) = 88 бит
-    // Но мы строим только payload (66 бит), preamble+sync добавляются отдельно
     uint16_t payloadBits = 66;
     uint16_t arrLen = (payloadBits + 7) / 8;
     memset(outBits, 0, arrLen);
 
-    // Давление: PMV-107J использует кодировку давления
-    // Давление в кПа * 10 (2300 = 230.0 кПа ≈ 33.4 psi)
-    // Кодирование: val = 1800 - pressure_kpa10 (инвертированное)
-    // Прямое: pressure_kpa10
-    uint16_t presEncoded = pressure;
-    if (presEncoded < 500) presEncoded = 500;
-    if (presEncoded > 3500) presEncoded = 3500;
+    // Encode pressure: stored as kPa*10 (2300=230.0kPa) -> rtl_433 format (kPa/2.48 + 40)
+    uint8_t pressureEnc = 0;
+    if (pressure > 0) {
+        float pKpa = (float)pressure / 10.0f;
+        int32_t pVal = (int32_t)(pKpa / 2.48f) + 40;
+        if (pVal < 0) pVal = 0;
+        if (pVal > 255) pVal = 255;
+        pressureEnc = (uint8_t)pVal;
+    }
 
-    // Инвертированное давление
-    uint16_t presInv = 4095 - presEncoded;
+    // Encode temperature: Celsius + 40
+    int32_t tVal = (int32_t)temperature + 40;
+    if (tVal < 0) tVal = 0;
+    if (tVal > 255) tVal = 255;
+    uint8_t tempEnc = (uint8_t)tVal;
 
-    // Температура: кодирование 3 бит
-    // -40°C=0, -30°C=1, ... +30°C=7, +40°C=7
-    int8_t tempEnc = (temperature + 40) / 10;
-    if (tempEnc < 0) tempEnc = 0;
-    if (tempEnc > 7) tempEnc = 7;
-    uint8_t tempXor = tempEnc ^ 0x07;
-
-    // ID: 28 бит, LSB first
+    // ID: 28 bits, MSB first (matching rtl_433's b[0]<<26 | b[1]<<18 | ...)
     for (int i = 0; i < 28; i++) {
-        set_bit(outBits, i, (sensorId >> i) & 1);
+        set_bit(outBits, i, (sensorId >> (27 - i)) & 1);
     }
 
-    // Флаг батареи (bit 28)
-    set_bit(outBits, 28, batFlag);
+    // Status/Flags: 6 bits (bits 28-33)
+    // rtl_433: battery_low(bit5), counter[1:0](bits4:3), unknown(bit2)=0, rapid_change(bit1)=0, failed(bit0)=0
+    set_bit(outBits, 28, batFlag);                    // battery_low
+    set_bit(outBits, 29, (counter >> 1) & 1);        // counter bit 1
+    set_bit(outBits, 30, (counter >> 0) & 1);        // counter bit 0
+    set_bit(outBits, 31, 0);                          // unknown (must be 0)
+    set_bit(outBits, 32, 0);                          // rapid_change
+    set_bit(outBits, 33, 0);                          // failed
 
-    // Счётчик (bits 29-30)
-    set_bit(outBits, 29, (counter >> 0) & 1);
-    set_bit(outBits, 30, (counter >> 1) & 1);
-
-    // Флаги (bits 31-32), обычно 0b11
-    set_bit(outBits, 31, 1);
-    set_bit(outBits, 32, 1);
-
-    // Давление инвертированное (bits 33-43), 11 бит, LSB first
-    for (int i = 0; i < 11; i++) {
-        set_bit(outBits, 33 + i, (presInv >> i) & 1);
-    }
-
-    // Давление прямое (bits 44-54), 11 бит, LSB first
-    for (int i = 0; i < 11; i++) {
-        set_bit(outBits, 44 + i, (presEncoded >> i) & 1);
-    }
-
-    // Температура XOR (bits 55-57), 3 бита
-    set_bit(outBits, 55, (tempXor >> 0) & 1);
-    set_bit(outBits, 56, (tempXor >> 1) & 1);
-    set_bit(outBits, 57, (tempXor >> 2) & 1);
-
-    // CRC-8 (bits 58-65)
-    uint8_t crc = calculate_crc8_pmv(outBits, 58);
+    // Pressure direct: 8 bits (bits 34-41), MSB first
     for (int i = 0; i < 8; i++) {
-        set_bit(outBits, 58 + i, (crc >> i) & 1);
+        set_bit(outBits, 34 + i, (pressureEnc >> (7 - i)) & 1);
+    }
+
+    // Pressure inverted: 8 bits (bits 42-49), MSB first = pressureEnc XOR 0xFF
+    uint8_t pressureInv = pressureEnc ^ 0xFF;
+    for (int i = 0; i < 8; i++) {
+        set_bit(outBits, 42 + i, (pressureInv >> (7 - i)) & 1);
+    }
+
+    // Temperature: 8 bits (bits 50-57), MSB first
+    for (int i = 0; i < 8; i++) {
+        set_bit(outBits, 50 + i, (tempEnc >> (7 - i)) & 1);
+    }
+
+    // CRC-8 over 64 bits (6 prepended zeros + 58 payload bits)
+    // Build the same byte layout as rtl_433's b[0..7]:
+    // b[0] = 0b000000XX (6 zeros + ID[27:26])
+    // b[1..7] = remaining 56 bits
+    uint8_t crcBytes[8];
+    memset(crcBytes, 0, sizeof(crcBytes));
+    // Pack all 66 payload bits into crcBytes, prepending 6 zeros
+    for (int i = 0; i < 64; i++) {
+        int srcBit = i - 6;  // source bit in outBits (-6 to 57)
+        uint8_t bitVal = 0;
+        if (srcBit >= 0 && srcBit < 58) {
+            bitVal = get_bit(outBits, srcBit);
+        }
+        if (bitVal) {
+            crcBytes[i / 8] |= (1 << (7 - (i % 8)));
+        }
+    }
+    // Compute CRC-8 with polynomial 0x13, init 0
+    uint8_t crcVal = 0;
+    for (int i = 0; i < 64; i++) {
+        uint8_t bit = (crcBytes[i / 8] >> (7 - (i % 8))) & 1;
+        uint8_t fb = crcVal ^ bit;
+        crcVal >>= 1;
+        if (fb & 1) crcVal ^= 0x8C;  // reflected poly for MSB-first processing
+    }
+
+    // CRC in bits 58-65
+    for (int i = 0; i < 8; i++) {
+        set_bit(outBits, 58 + i, (crcVal >> (7 - i)) & 1);
     }
 
     return payloadBits;
@@ -293,113 +361,127 @@ static uint16_t build_pmv107j_payload(uint8_t *outBits, uint32_t sensorId,
 // =========================================================================
 static uint16_t differential_manchester_encode(const uint8_t *inBits, uint16_t inLen,
                                                 uint8_t *outBits) {
-    // DM encoding удваивает длину: каждый бит → 2 бита
     uint16_t outLen = inLen * 2;
     uint16_t arrLen = (outLen + 7) / 8;
     memset(outBits, 0, arrLen);
 
-    // Начальное состояние: предыдущий символ = 1
-    uint8_t prevLevel = 1;
-    uint16_t outIdx = 0;
+    uint16_t outPos = 0;
+    uint8_t state = 0;
 
     for (uint16_t i = 0; i < inLen; i++) {
         uint8_t bit = get_bit(inBits, i);
+        uint8_t same = (bit == state);
 
-        if (bit == 0) {
-            // Бит 0: переход в середине
-            set_bit(outBits, outIdx++, prevLevel);
-            prevLevel = prevLevel ? 0 : 1;  // переход
-            set_bit(outBits, outIdx++, prevLevel);
+        if (same) {
+            set_bit(outBits, outPos++, 1);
+            set_bit(outBits, outPos++, 0);
+            state = 0;
         } else {
-            // Бит 1: без перехода
-            set_bit(outBits, outIdx++, prevLevel);
-            set_bit(outBits, outIdx++, prevLevel);
+            set_bit(outBits, outPos++, 0);
+            set_bit(outBits, outPos++, 1);
+            state = 1;
         }
     }
 
-    return outIdx;
+    return outPos;
 }
 
 // =========================================================================
-// Построение полного пакета PMV-107J
-// Preamble: 16 нулей + "111110" (6 бит) + 66 бит payload
-// Всего: 88 бит → DM encode → 176 бит → 22 байта
+// PMV-107J: построение полного пакета
+// Рабочий формат (как в TPMS-Emulator):
+//   16 settle zeros (raw) + "111110" preamble (raw, 6 bits)
+//   + DM-encoded payload (1 + 66 + 1 = 68 bits → 136 DM bits)
+//   + 6 trailer zeros (raw)
+//   Итого: 16 + 6 + 136 + 6 = 164 bits = 21 bytes
 // =========================================================================
 static uint16_t build_pmv107j_packet(uint8_t *packet, uint32_t sensorId,
                                       uint16_t pressure, int8_t temperature,
                                       uint8_t counter, uint8_t batFlag) {
-    // Шаг 1: Строим preamble + sync + payload = 88 бит
-    uint8_t rawBits[24]; // 88 бит = 11 байт
-    memset(rawBits, 0, sizeof(rawBits));
+    // Step 1: Build 66-bit payload (ID + flags + pressure + inv_pressure + temp + CRC)
+    uint8_t payload_bits[16];
+    memset(payload_bits, 0, sizeof(payload_bits));
+    build_pmv107j_payload(payload_bits, sensorId, pressure, temperature, counter, batFlag);
 
-    // Preamble: 16 нулей (уже нули от memset)
-    // Sync: "111110" в позициях 16-21
-    uint8_t syncPat[] = {1, 1, 1, 1, 1, 0};
-    for (int i = 0; i < 6; i++) {
-        set_bit(rawBits, 16 + i, syncPat[i]);
+    // Step 2: Build DM input: '1' + 66 payload bits + '1' = 68 bits
+    uint8_t dm_input[16];
+    memset(dm_input, 0, sizeof(dm_input));
+    uint16_t dm_in_pos = 0;
+    set_bit(dm_input, dm_in_pos++, 1);
+    for (uint16_t i = 0; i < 66; i++) {
+        set_bit(dm_input, dm_in_pos++, get_bit(payload_bits, i));
     }
+    set_bit(dm_input, dm_in_pos++, 1);
 
-    // Payload: 66 бит начиная с позиции 22
-    uint16_t payloadBits = build_pmv107j_payload(rawBits + 2,  // смещение на 16 бит = 2 байта
-                                                    sensorId, pressure, temperature,
-                                                    counter, batFlag);
-    // payloadBits = 66, позиция в rawBits = 22
-    // build_pmv107j_payload пишет в outBits начиная с бита 0
-    // Нам нужно сдвинуть на 22 бита
-    // Переписываем: сначала строим payload в отдельный массив
-    uint8_t payloadArr[16];
-    memset(payloadArr, 0, sizeof(payloadArr));
-    payloadBits = build_pmv107j_payload(payloadArr, sensorId, pressure,
-                                         temperature, counter, batFlag);
+    // Step 3: Differential Manchester encode
+    uint8_t dm_output[40];
+    memset(dm_output, 0, sizeof(dm_output));
+    uint16_t dm_out_len = differential_manchester_encode(dm_input, dm_in_pos, dm_output);
 
-    // Копируем payload в rawBits начиная с бита 22
-    for (uint16_t i = 0; i < payloadBits; i++) {
-        set_bit(rawBits, 22 + i, get_bit(payloadArr, i));
+    // Step 4: Build complete on-air bitstream
+    // 16 settle zeros + "111110" + DM data + 6 trailer zeros
+    uint8_t tx_buf[30];
+    memset(tx_buf, 0, sizeof(tx_buf));
+    uint16_t tx_pos = 0;
+
+    tx_pos = 16;  // SETTLE_BITS: 16 zeros (already zero from memset)
+
+    // Preamble: "111110" (6 bits: 5 ones + 1 zero)
+    for (uint8_t i = 0; i < 6; i++) {
+        if (i < 5) set_bit(tx_buf, tx_pos + i, 1);
     }
+    tx_pos += 6;
 
-    uint16_t totalBits = 22 + payloadBits; // 88 бит
-
-    // Шаг 2: Differential Manchester Encoding
-    uint8_t dmBits[32]; // 176 бит = 22 байта
-    uint16_t dmLen = differential_manchester_encode(rawBits, totalBits, dmBits);
-
-    // Шаг 3: Конвертируем биты в байты
-    uint16_t byteLen = (dmLen + 7) / 8;
-    memset(packet, 0, byteLen + 1);
-    for (uint16_t i = 0; i < dmLen; i++) {
-        if (get_bit(dmBits, i)) {
-            packet[i / 8] |= (1 << (7 - (i % 8)));
-        }
+    // DM-encoded payload
+    for (uint16_t i = 0; i < dm_out_len; i++) {
+        set_bit(tx_buf, tx_pos + i, get_bit(dm_output, i));
     }
+    tx_pos += dm_out_len;
 
-    return byteLen;
+    // Trailer: 6 zeros (already zero from memset)
+    tx_pos += 6;
+
+    uint8_t tx_bytes = (tx_pos + 7) / 8;
+    memcpy(packet, tx_buf, tx_bytes);
+    return tx_bytes;
 }
 
 // =========================================================================
 // Отправка сырых данных через CC1101 (fixed-length TX)
 // =========================================================================
 static void cc1101_send_raw(const uint8_t *data, uint8_t len) {
+    cc1101Wake();
+
     radio.setIdleState();
-    radio.flushTxFifo();
+    delay(1);
 
-    // Устанавливаем длину пакета
+    radio.sendCommand(CC1101_SCAL);
+    delay(3);
+
+    // Fixed length TX mode (matching working TPMS-Emulator project)
+    radio.writeReg(CC1101_PKTCTRL0, 0x00);
     radio.writeReg(CC1101_PKTLEN, len);
+    radio.writeReg(CC1101_PKTCTRL1, 0x00);
+    radio.setManc(0);
 
-    // Пишем данные в FIFO
+    radio.flushTxFifo();
+    delay(1);
     radio.writeBurstReg(CC1101_TXFIFO, data, len);
 
     // Старт TX
     radio.sendCommand(CC1101_STX);
 
     // Ждём окончания передачи
+    delay(3);
     unsigned long start = millis();
-    while (millis() - start < 100) {
+    while (millis() - start < 200) {
         uint8_t state = radio.getMarcState();
         if (state == CC1101_MARCSTATE_IDLE || state == 0x01) break;
         delayMicroseconds(100);
     }
 
     radio.setIdleState();
+    delay(1);
+    radio.flushTxFifo();
 }
 
 // =========================================================================
@@ -427,8 +509,8 @@ static void send_pmv107j_sensor(uint8_t sensorIdx) {
     // Посылаем информацию о пакете в BLE
     char buf[128];
     snprintf(buf, sizeof(buf),
-             "{\"t\":\"pkt\",\"s\":%d,\"id\":\"%06X\",\"p\":%d,\"tmp\":%d,\"c\":%d,\"crc\":\"OK\"}",
-             sensorIdx, (unsigned)s->id, (unsigned)s->pressure, (int)s->temperature, counter);
+             "{\"t\":\"pkt\",\"s\":%d,\"id\":\"%08X\",\"p\":%d,\"tmp\":%d,\"c\":%d,\"crc\":\"OK\"}",
+             sensorIdx, (unsigned)s->id, (unsigned)s->pressure / 10, (int)s->temperature, counter);
     bleSendChunked(buf);
 }
 
@@ -605,13 +687,14 @@ static bool sniffer_decode_packet(const uint8_t *data, uint8_t len,
 // Sniffer: управление
 // =========================================================================
 static void sniffer_start() {
+    cc1101Wake();
     radio.setIdleState();
     radio.flushRxFifo();
 
     // Настраиваем для приёма
-    radio.writeReg(CC1101_PKTCTRL0, 0x32);  // Fixed length, no CRC
+    radio.writeReg(CC1101_PKTCTRL0, 0x02);  // Infinite length, no CRC, normal FIFO
     radio.writeReg(CC1101_PKTLEN, 0xFF);     // максимальная длина
-    radio.writeReg(CC1101_MDMCFG2, 0x10);   // 2-FSK
+    radio.writeReg(CC1101_MDMCFG2, 0x10);   // 2-FSK, no Manchester, no sync
     radio.writeReg(CC1101_IOCFG0, 0x06);    // GDO0 = sync detect
 
     radio.setRxState();
@@ -625,8 +708,26 @@ static void sniffer_start() {
 }
 
 static void sniffer_stop() {
-    radio.setIdleState();
     snifferActive = false;
+
+    int applied = 0;
+    for (int i = 0; i < MAX_SENSORS; i++) {
+        if (discovered[i].valid) {
+            cfg.sensors[i].id = discovered[i].id;
+            cfg.sensors[i].pressure = discovered[i].pressure;
+            cfg.sensors[i].temperature = discovered[i].temperature;
+            cfg.sensors[i].flags = 0x01;
+            applied++;
+        }
+    }
+    if (applied > 0) {
+        saveConfig();
+        char logBuf[64];
+        snprintf(logBuf, sizeof(logBuf), "Auto-applied %d discovered sensors", applied);
+        sendLog(logBuf);
+    }
+
+    cc1101Sleep();
     sendLog("Sniffer stopped");
 }
 
@@ -679,7 +780,7 @@ static void sniffer_loop() {
         // Отправляем данные в BLE
         char buf2[160];
         snprintf(buf2, sizeof(buf2),
-                 "{\"t\":\"pkt\",\"id\":\"%06X\",\"p\":%d,\"tmp\":%d,\"c\":%d,\"rssi\":%d}",
+                 "{\"t\":\"pkt\",\"id\":\"%08X\",\"p\":%d,\"tmp\":%d,\"c\":%d,\"rssi\":%d}",
                  (unsigned)ds.id, (unsigned)ds.pressure, (int)ds.temperature,
                  (int)ds.counter, (int)ds.rssi);
         bleSendChunked(buf2);
@@ -753,7 +854,7 @@ static bool saveConfig() {
     cfg.trial_start = trialStartTime;
 
     file.open(CONFIG_FILENAME, FILE_O_WRITE);
-    size_t written = file.write(&cfg, sizeof(cfg));
+    size_t written = file.write((const uint8_t *)&cfg, sizeof(cfg));
     file.close();
 
     if (written != sizeof(cfg)) {
@@ -791,9 +892,9 @@ static void sendStatus() {
     for (int i = 0; i < MAX_SENSORS; i++) {
         SensorConfig *s = &cfg.sensors[i];
         pos += snprintf(buf + pos, sizeof(buf) - pos,
-            "%s{\"i\":%d,\"id\":\"%06X\",\"p\":%u,\"t\":%d,\"en\":%d,\"l\":\"%s\"}",
+            "%s{\"i\":%d,\"id\":\"%08X\",\"p\":%u,\"t\":%d,\"en\":%d,\"l\":\"%s\"}",
             (i > 0) ? "," : "",
-            i, (unsigned)s->id, (unsigned)s->pressure, (int)s->temperature,
+            i, (unsigned)s->id, (unsigned)s->pressure / 10, (int)s->temperature,
             (s->flags & 0x01) ? 1 : 0, labels[i]);
     }
 
@@ -803,7 +904,7 @@ static void sendStatus() {
         if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
         if (discovered[i].valid) {
             pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"id\":\"%06X\",\"p\":%u,\"t\":%d,\"rssi\":%d}",
+                "{\"id\":\"%08X\",\"p\":%u,\"t\":%d,\"rssi\":%d}",
                 (unsigned)discovered[i].id, (unsigned)discovered[i].pressure,
                 (int)discovered[i].temperature, (int)discovered[i].rssi);
         } else {
@@ -819,6 +920,8 @@ static void sendStatus() {
 // =========================================================================
 // BLE RX callback
 // =========================================================================
+static volatile bool cmdReady = false;
+
 static void bleRxCallback(uint16_t conn_hdl) {
     (void)conn_hdl;
 
@@ -829,10 +932,9 @@ static void bleRxCallback(uint16_t conn_hdl) {
         if (c == '\n' || c == '\r') {
             if (cmdBufLen > 0) {
                 cmdBuf[cmdBufLen] = 0;
-                cmdBufLen = 0;
-                // Команда будет обработана в main loop
+                cmdReady = true;
             }
-        } else if (cmdBufLen < CMD_BUFFER_SIZE - 1) {
+        } else if (!cmdReady && cmdBufLen < CMD_BUFFER_SIZE - 1) {
             cmdBuf[cmdBufLen++] = (char)c;
         }
     }
@@ -925,7 +1027,7 @@ static void processCommand(const char *cmd) {
 
         int32_t pressure = 0;
         if (jsonGetInt(cmd, "pressure", &pressure)) {
-            cfg.sensors[sensorIdx].pressure = (uint16_t)pressure;
+            cfg.sensors[sensorIdx].pressure = (uint16_t)(pressure * 10);
         }
 
         int32_t temp = 0;
@@ -965,9 +1067,24 @@ static void processCommand(const char *cmd) {
             cfg.freq = (uint8_t)freq;
             uint32_t freqHz = (freq == 433) ? 433000000UL : 315000000UL;
             radio.setFreq(freqHz);
-            sendLog("Frequency changed");
+        }
+        int32_t drate = 0;
+        if (jsonGetInt(cmd, "drate", &drate)) {
+            cfg.datarate = (uint32_t)drate;
+            radio.setDRate(cfg.datarate);
+        }
+        int32_t dev = 0;
+        if (jsonGetInt(cmd, "dev", &dev)) {
+            cfg.deviation = (uint16_t)dev;
+            radio.setDeviation((float)cfg.deviation / 10.0f);
+        }
+        int32_t pwr = 0;
+        if (jsonGetInt(cmd, "pwr", &pwr)) {
+            cfg.power = (uint8_t)constrain(pwr, 0, 7);
+            radio.setPA(cfg.power);
         }
         saveConfig();
+        sendLog("Settings applied");
     }
     else if (strcmp(cmdName, "sniff_start") == 0) {
         if (cfg.tx_enabled) {
@@ -1028,9 +1145,22 @@ static void processCommand(const char *cmd) {
 // Настройка BLE
 // =========================================================================
 static void setupBLE() {
+    Bluefruit.configPrphConn(247, 16, 4, 4);  // MTU, event_len, hvn_qsize, wrcmd_qsize
     Bluefruit.begin();
-    Bluefruit.setTxPower(4);    // Check valid values for the board
+    Bluefruit.setTxPower(0);    // 0 dBm — reliable connection
     Bluefruit.setName("TPMS-NRF52840");
+
+    // Connection callbacks
+    Bluefruit.Periph.setConnectCallback([](uint16_t conn_handle) {
+        bleConnected = true;
+        // Don't send anything here — phone hasn't written CCCD yet
+    });
+    Bluefruit.Periph.setDisconnectCallback([](uint16_t conn_handle, uint8_t reason) {
+        bleConnected = false;
+        if (snifferActive) sniffer_stop();
+        // After disconnect → deep sleep (will wake on button press → reset → advertise again)
+        enterDeepSleep();
+    });
 
     // Configure and Start Device Information Service
     bledis.setManufacturer("TPMS-Emulator");
@@ -1078,6 +1208,9 @@ void setup() {
     pinMode(PIN_STATUS_LED, OUTPUT);
     digitalWrite(PIN_STATUS_LED, LOW);
 
+    // Wake button (active LOW with pull-up)
+    pinMode(PIN_WAKE_BTN, INPUT_PULLUP);
+
     // CC1101 питание
     cc1101PowerOn();
 
@@ -1089,19 +1222,20 @@ void setup() {
     setupBLE();
 
     // Инициализация CC1101
-    if (!radio.init()) {
-        sendLog("CC1101 init FAILED!");
-        blinkLed(10, 100);
-    } else {
-        sendLog("CC1101 initialized OK");
-        // Настраиваем частоту из конфига
-        uint32_t freqHz = (cfg.freq == 433) ? 433000000UL : 315000000UL;
-        radio.setFreq(freqHz);
-        radio.setPA(cfg.power);
+    radio.init();
+    sendLog("CC1101 initialized OK");
+    // Настраиваем частоту из конфига
+    uint32_t freqHz = (cfg.freq == 433) ? 433000000UL : 315000000UL;
+    radio.setFreq(freqHz);
+    radio.setPA(cfg.power);
+    // Частота и девиация из конфига (как было раньше — radio.init() дефолты)
+    radio.setFreq(freqHz);
+    radio.setPA(cfg.power);
+    radio.setDRate(cfg.datarate);
+    radio.setDeviation((float)cfg.deviation / 10.0f);
 
-        // Режим: IDLE (ждём команд через BLE)
-        radio.setIdleState();
-    }
+    // Спим до первого использования
+    cc1101Sleep();
 
     // BLE RX callback
     bleuart.setRxCallback(bleRxCallback);
@@ -1110,17 +1244,27 @@ void setup() {
     blinkLed(3, 200);
     sendLog("TPMS-NRF52840 ready");
     sendStatus();
+
+    // BLE power management timer
+    bleStartTime = millis();
 }
 
 // =========================================================================
 // MAIN LOOP
 // =========================================================================
 void loop() {
+    // 0. BLE power management: 1 min timeout → deep sleep
+    if (!bleConnected && bleAdvertising) {
+        if (millis() - bleStartTime > BLE_ADVERTISE_TIMEOUT_MS) {
+            enterDeepSleep();  // never returns
+        }
+    }
+
     // 1. Обработка BLE команд
-    if (cmdBufLen > 0 && (cmdBuf[cmdBufLen - 1] == '}' || cmdBuf[cmdBufLen - 1] == '\n')) {
-        cmdBuf[cmdBufLen] = 0;
+    if (cmdReady) {
         processCommand(cmdBuf);
         cmdBufLen = 0;
+        cmdReady = false;
     }
 
     // 2. Сниффер

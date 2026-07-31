@@ -52,6 +52,10 @@ class MainActivity : AppCompatActivity() {
     private var isNusReady = false
     private var pendingMessages = mutableListOf<String>()
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
+    private var cccdDescriptor: BluetoothGattDescriptor? = null
+    private var cccdGatt: BluetoothGatt? = null
+    private var cccdRetryCount = 0
+    private val CCCD_MAX_RETRY = 3
     private val rxBuffer = StringBuilder()
 
     private val sensorViews = mutableListOf<SensorViewHolder>()
@@ -281,18 +285,21 @@ class MainActivity : AppCompatActivity() {
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             super.onConnectionStateChange(gatt, status, newState)
+            Log.d(TAG, "onConnectionStateChange status=$status newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 runOnUiThread {
-                    binding.tvConnectionState.text = "Подключено, согласование MTU..."
+                    binding.tvConnectionState.text = "Подключено, поиск сервисов..."
                     log("BLE подключен")
                 }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                    ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    gatt?.requestMtu(517)
-                } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                    gatt?.requestMtu(517)
-                }
+                handler.postDelayed({
+                    try {
+                        val method = gatt?.javaClass?.getMethod("refresh")
+                        method?.invoke(gatt)
+                    } catch (_: Exception) {}
+                    handler.postDelayed({
+                        gatt?.discoverServices()
+                    }, 100)
+                }, 200)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 rxCharacteristic = null
                 isNusReady = false
@@ -311,13 +318,7 @@ class MainActivity : AppCompatActivity() {
         override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
             super.onMtuChanged(gatt, mtu, status)
             Log.d(TAG, "onMtuChanged mtu=$mtu status=$status")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-            ) {
-                gatt?.discoverServices()
-            } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                gatt?.discoverServices()
-            }
+            gatt?.discoverServices()
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
@@ -341,14 +342,23 @@ class MainActivity : AppCompatActivity() {
             rxCharacteristic = rxChar
             Log.d(TAG, "tx props=${txChar.properties} rx props=${rxChar.properties}")
 
-            gatt.setCharacteristicNotification(txChar, true)
-            val descriptor = txChar.getDescriptor(CCCD_UUID)
-            if (descriptor != null) {
-                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(descriptor)
-            } else {
-                onNusReady()
-            }
+            handler.postDelayed({
+                gatt.setCharacteristicNotification(txChar, true)
+                val descriptor = txChar.getDescriptor(CCCD_UUID)
+                Log.d(TAG, "CCCD descriptor: $descriptor")
+                if (descriptor != null) {
+                    cccdDescriptor = descriptor
+                    cccdGatt = gatt
+                    cccdRetryCount = 0
+                    val result = descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    Log.d(TAG, "descriptor.setValue result=$result")
+                    val writeResult = gatt.writeDescriptor(descriptor)
+                    Log.d(TAG, "writeDescriptor result=$writeResult")
+                } else {
+                    Log.d(TAG, "CCCD descriptor not found, calling onNusReady directly")
+                    onNusReady()
+                }
+            }, 200)
 
             runOnUiThread {
                 isConnected = true
@@ -381,9 +391,25 @@ class MainActivity : AppCompatActivity() {
             super.onDescriptorWrite(gatt, descriptor, status)
             Log.d(TAG, "onDescriptorWrite status=$status")
             if (status == BluetoothGatt.GATT_SUCCESS) {
+                cccdDescriptor = null
+                cccdGatt = null
+                cccdRetryCount = 0
                 onNusReady()
+            } else if (cccdRetryCount < CCCD_MAX_RETRY) {
+                cccdRetryCount++
+                Log.d(TAG, "CCCD write failed, retry $cccdRetryCount/$CCCD_MAX_RETRY")
+                val desc = cccdDescriptor
+                val g = cccdGatt
+                if (desc != null && g != null) {
+                    handler.postDelayed({
+                        desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        g.writeDescriptor(desc)
+                    }, 200)
+                } else {
+                    runOnUiThread { log("Ошибка включения уведомлений: $status") }
+                }
             } else {
-                runOnUiThread { log("Ошибка включения уведомлений: $status") }
+                runOnUiThread { log("Ошибка включения уведомлений: $status (после $CCCD_MAX_RETRY попыток)") }
             }
         }
 
@@ -415,6 +441,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendNextPending() {
+        if (pendingMessages.isEmpty()) return
         val next = pendingMessages.removeAt(0)
         sendCommandInternal(next)
     }
@@ -489,6 +516,23 @@ class MainActivity : AppCompatActivity() {
             when (json.optString("t")) {
                 "status" -> json.optJSONObject("data")?.let { applyStatus(it) }
                 "log" -> log(json.optString("m"))
+                "pkt" -> {
+                    val s = json.optInt("s", -1)
+                    val id = json.optString("id", "?")
+                    val p = json.optInt("p", 0)
+                    val tmp = json.optInt("tmp", 0)
+                    val c = json.optInt("c", 0)
+                    val crc = json.optString("crc", "?")
+                    log("TX PKT #${s}: id=$id p=$p t=$tmp cnt=$c crc=$crc")
+                }
+                "disc" -> {
+                    val id = json.optString("id", "?")
+                    val p = json.optInt("p", 0)
+                    val tmp = json.optInt("tmp", 0)
+                    val rssi = json.optInt("rssi", 0)
+                    log("DISC: id=$id p=$p t=$tmp rssi=$rssi")
+                }
+                else -> log(data)
             }
         } catch (e: Exception) {
             log(data)
@@ -502,9 +546,9 @@ class MainActivity : AppCompatActivity() {
                 val s = it.getJSONObject(i)
                 val h = sensorViews[i]
                 h.etId.setText(s.optString("id", "00000000"))
-                h.etPressure.setText(s.optInt("pressure", 230).toString())
-                h.etTemperature.setText(s.optInt("temp", 20).toString())
-                h.cbEnabled.isChecked = s.optBoolean("enabled", true)
+                h.etPressure.setText(s.optInt("p", 2300).toString())
+                h.etTemperature.setText(s.optInt("t", 20).toString())
+                h.cbEnabled.isChecked = s.optInt("en", 0) == 1
             }
         }
 
@@ -512,62 +556,40 @@ class MainActivity : AppCompatActivity() {
         binding.rb315.isChecked = freq == 315
         binding.rb433.isChecked = freq == 433
 
-        val autoTx = data.optJSONObject("autoTx")
-        autoTx?.let {
-            isAutoTx = it.optBoolean("enabled", false)
-            binding.btnAutoTx.text = if (isAutoTx) "Стоп" else "Старт"
-            binding.etInterval.setText(it.optInt("interval", 300).toString())
-            binding.etPackets.setText(it.optInt("packets", 2).toString())
-        }
+        isAutoTx = data.optInt("tx_en", 0) == 1
+        binding.btnAutoTx.text = if (isAutoTx) "Стоп" else "Старт"
+        binding.etInterval.setText(data.optInt("tx_int", 300).toString())
+        binding.etPackets.setText(data.optInt("tx_pkt", 2).toString())
 
-        val license = data.optJSONObject("license")
-        license?.let {
-            val licensed = it.optBoolean("licensed", false)
-            val trialSec = it.optInt("trialSec", 0)
-            val remain = 86400 - trialSec
-            binding.tvLicense.text = if (licensed) {
-                "Лицензия активирована"
-            } else if (remain > 0) {
-                val h = remain / 3600
-                val m = (remain % 3600) / 60
-                "Пробный период: ${h}ч ${m}мин"
-            } else {
-                "Пробный период истек"
-            }
-            binding.tvLicense.setTextColor(
-                if (licensed) getColor(android.R.color.holo_green_light)
-                else if (remain > 0) getColor(android.R.color.holo_orange_light)
-                else getColor(android.R.color.holo_red_light)
-            )
-        }
+        val licensed = data.optInt("license", 0) == 1
+        binding.tvLicense.text = if (licensed) "Лицензия активирована" else "Без лицензии"
+        binding.tvLicense.setTextColor(
+            if (licensed) getColor(android.R.color.holo_green_light)
+            else getColor(android.R.color.holo_orange_light)
+        )
 
-        val battery = data.optJSONObject("battery")
-        battery?.let {
-            val mv = it.optInt("mv", 0)
-            val pct = it.optInt("pct", 0)
-            binding.tvBattery.text = "Батарея: ${mv}mV (${pct}%)"
-            when {
-                it.optBoolean("critical", false) -> binding.tvBattery.setTextColor(getColor(android.R.color.holo_red_light))
-                it.optBoolean("low", false) -> binding.tvBattery.setTextColor(getColor(android.R.color.holo_orange_light))
-                else -> binding.tvBattery.setTextColor(getColor(android.R.color.holo_green_light))
-            }
-        }
+        val mv = data.optInt("batt_mv", 0)
+        val pct = data.optInt("batt_pct", 0)
+        binding.tvBattery.text = "Батарея: ${mv}mV (${pct}%)"
+        binding.tvBattery.setTextColor(
+            if (pct < 10) getColor(android.R.color.holo_red_light)
+            else if (pct < 30) getColor(android.R.color.holo_orange_light)
+            else getColor(android.R.color.holo_green_light)
+        )
 
-        val sniffer = data.optJSONObject("sniffer")
-        sniffer?.let {
-            val active = it.optBoolean("active", false)
-            val count = it.optInt("count", 0)
-            val arr = it.optJSONArray("sensors")
-            val sb = StringBuilder()
-            sb.appendLine("Сниффер: ${if (active) "активен" else "выкл"}, найдено: $count")
-            arr?.let { a ->
-                for (i in 0 until a.length()) {
-                    val s = a.getJSONObject(i)
-                    sb.appendLine("ID:${s.optString("id")} P:${s.optInt("p")} T:${s.optInt("t")}")
+        val sniffActive = data.optInt("sniff", 0) == 1
+        val disc = data.optJSONArray("disc")
+        val sb = StringBuilder()
+        sb.appendLine("Сниффер: ${if (sniffActive) "активен" else "выкл"}")
+        disc?.let { a ->
+            for (i in 0 until a.length()) {
+                val obj = a.optJSONObject(i)
+                if (obj != null) {
+                    sb.appendLine("  #${i}: id=${obj.optString("id")} p=${obj.optInt("p")} t=${obj.optInt("t")} rssi=${obj.optInt("rssi")}")
                 }
             }
-            binding.tvSniffResults.text = sb.toString()
         }
+        log(sb.toString().trimEnd())
     }
 
     private fun updateConnectionState() {
