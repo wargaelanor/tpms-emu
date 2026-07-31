@@ -101,8 +101,8 @@ static CC1101 radio(PIN_CC1101_CS, PIN_CC1101_GDO0, PIN_CC1101_GDO2);
 static TPMSConfig cfg;
 static DiscoveredSensor discovered[MAX_SENSORS];
 
-// Flash config storage - last page of 1MB flash (page 255)
-#define CONFIG_FLASH_PAGE  255
+// Flash config storage - page 200 (0xC8000), between app and bootloader
+#define CONFIG_FLASH_PAGE  200
 #define CONFIG_FLASH_ADDR  (CONFIG_FLASH_PAGE * 4096)
 #define CONFIG_FLASH_MAGIC 0x54504D43  // "TPMC"
 
