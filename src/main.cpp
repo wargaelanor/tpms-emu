@@ -33,7 +33,7 @@ extern "C" {
 #define PIN_CC1101_GDO2 12    // Arduino pin 12 = P0.08 (board label "008")
 #define PIN_CC1101_PWR  28    // Arduino pin 28 = P0.20 (board label "020")
 #define PIN_STATUS_LED  24    // Arduino pin 24 = P0.15 (onboard LED)
-#define PIN_BATTERY_ADC 18    // Arduino pin 18 = P0.02 (board label "002"), AIN4
+#define PIN_BATTERY_ADC 20    // Arduino pin 20 = P0.29 (A6 / PIN_VBAT), делитель 1:2 на B+/VBAT
 #define PIN_WAKE_BTN    8     // Arduino pin 8  = P0.05 (board label "005"), wake button
 
 // =========================================================================
@@ -81,6 +81,9 @@ struct __attribute__((packed)) TPMSConfig {
     uint8_t     license_key[4]; // 4 байта лицензии (упрощённо)
     uint32_t    trial_start;    // начало триала (unix timestamp)
     uint16_t    batt_mah;       // ёмкость батареи мАч
+    uint8_t     batt_pin;       // аналоговый пин батареи (Arduino-номер), 0/255 = авто A1
+    uint16_t    batt_cal_raw;   // сырой ADC при калибровке (0 = нет калибровки)
+    uint16_t    batt_cal_mv;    // реальное напряжение при калибровке (мВ)
 };
 
 // Данные обнаруженного датчика (для сниффера)
@@ -130,8 +133,9 @@ static volatile bool configDirty = false;
 // BLE power management
 static bool bleConnected = false;
 static bool bleAdvertising = true;
+static bool bleHadConnection = false;  // true после первого реального connect
 static uint32_t bleStartTime = 0;
-#define BLE_ADVERTISE_TIMEOUT_MS  60000  // 1 minute
+#define BLE_ADVERTISE_TIMEOUT_MS  0xFFFFFFFFu  // анонсируемся бесконечно, пока нет подключения
 
 static void cc1101Sleep();
 
@@ -176,12 +180,44 @@ static inline uint8_t get_bit(const uint8_t *arr, uint16_t bit) {
 // =========================================================================
 // Battery monitoring
 // =========================================================================
+// Эта плата (SuperMini/ProMicro NRF52840, клон nice!nano V2) НЕ имеет
+// распаянного делителя батареи на GPIO-пинах («Voltage divider (0.24) is
+// unpopulated», см. https://github.com/joric/nrfmicro/wiki/Alternatives#supermini-nrf52840).
+// Напряжение батареи присутствует на шине VDDH (через зарядную микросхему),
+// поэтому по умолчанию измеряем его внутренним SAADC-каналом VDDH/5
+// (analogReadVDDHDIV5). Для редких плат с распаянным делителем можно явно
+// указать batt_pin (14..21) — тогда читаем внешний пина.
+static int readBatteryRaw() {
+    analogReadResolution(10);
+    if (cfg.batt_pin >= A0 && cfg.batt_pin <= A7) {
+        return analogRead(cfg.batt_pin);
+    }
+    return (int)analogReadVDDHDIV5();  // внутренний канал VDDH/5 (по умолчанию)
+}
+
+// USB-детект: VBUS присутствует через USBREGSTATUS (nRF52840). У этой платы
+// при USB-питании шина VDDH подтягивается к шине USB (~4.2 В), поэтому показания
+// батареи недостоверны — нужно явно отличать USB от реальной АКБ.
+static bool isUsbPowered() {
+    return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk)
+           == POWER_USBREGSTATUS_VBUSDETECT_VbusPresent;
+}
+
 static uint16_t readBatteryMv() {
-    analogReadResolution(12);
-    int adc = analogRead(A4);  // PIN_BATTERY_ADC = 18 = A4
-    // Делитель 1:2, Vref = 3.3V, 12-bit ADC
-    // Vbat = adc * 2 * 3300 / 4096
-    uint32_t mv = (uint32_t)adc * 6600UL / 4096UL;
+    // USB-питание: VDDH = шина USB, батарею не измеряем → 0
+    if (isUsbPowered()) return 0;
+    int adc = readBatteryRaw();
+    if (cfg.batt_cal_raw > 0 && cfg.batt_cal_mv > 0) {
+        uint32_t mv = (uint32_t)adc * cfg.batt_cal_mv / cfg.batt_cal_raw;
+        return (uint16_t)mv;
+    }
+    // Канал VDDH/5: полная шкала 10 бит (1023) = 3.6 В на входе SAADC = 18 В на VDDH.
+    // мВ = raw * 3600 * 5 / 1023 = raw * 18000 / 1023.
+    uint32_t mv = (uint32_t)adc * 18000UL / 1023UL;
+    // VDDH выше 4.6 В означает USB-питание без батареи (у этой платы VDDH
+    // переключается на 5V). Чтобы не показывать «заряжено» при отключённой
+    // батарее, возвращаем 0.
+    if (mv > 4600) return 0;
     return (uint16_t)mv;
 }
 
@@ -275,6 +311,12 @@ static bool saveConfig() {
         sendLog("Flash write FAILED");
         return false;
     }
+
+    // flash_nrf5x_write() только буферизует данные в кэше библиотеки.
+    // Реальное программирование флэша происходит только при flush/переходе на другую страницу.
+    // Без flush() конфиг теряется при перезагрузке, поэтому обязателен вызов flash_nrf5x_flush().
+    flash_nrf5x_flush();
+    sendLog("Config saved to flash");
 
     return true;
 }
@@ -836,6 +878,9 @@ static void setDefaultConfig() {
     cfg.tx_packets = DEFAULT_PACKETS;
     cfg.freq = DEFAULT_FREQ_315;
     cfg.batt_mah = 500;
+    cfg.batt_pin = 0xFF;  // 0xFF = внутренний канал VDDH/5 (по умолчанию для этой платы)
+    cfg.batt_cal_raw = 0;  // калибровка не выполнена
+    cfg.batt_cal_mv = 0;
 
     // Датчики по умолчанию (Acura RDX 2008)
     cfg.sensors[0].id = 0x00298088; cfg.sensors[0].pressure = 2300; cfg.sensors[0].temperature = 20; cfg.sensors[0].flags = 0x01;
@@ -852,7 +897,6 @@ static bool loadConfig() {
     if (fc->magic != CONFIG_FLASH_MAGIC) {
         sendLog("No config in flash, using defaults");
         setDefaultConfig();
-        saveConfig();
         return false;
     }
 
@@ -860,12 +904,23 @@ static bool loadConfig() {
     if (expected != fc->checksum) {
         sendLog("Config checksum bad, using defaults");
         setDefaultConfig();
-        saveConfig();
         return false;
     }
 
     memcpy(&cfg, &fc->cfg, sizeof(cfg));
     trialStartTime = cfg.trial_start;
+
+    // Валидация batt_pin: старые конфиги, сохранённые до добавления этого поля,
+    // содержат мусор. Допустимы 0xFF (внутренний VDDH/5) или аналоговые пины A0-A7 (Arduino 14-21).
+    {
+        bool validPin = (cfg.batt_pin == 0xFF);
+        for (uint8_t i = 0; i < 8; i++) {
+            if (cfg.batt_pin == (A0 + i)) { validPin = true; break; }
+        }
+        if (!validPin) {
+            cfg.batt_pin = 0xFF;  // дефолт: внутренний канал VDDH/5
+        }
+    }
 
     if (cfg.license_key[0] || cfg.license_key[1] || cfg.license_key[2] || cfg.license_key[3]) {
         licenseValid = 2;
@@ -892,12 +947,14 @@ static void sendStatus() {
     pos += snprintf(buf + pos, sizeof(buf) - pos,
         "\"freq\":%d,\"drate\":%lu,\"dev\":%u,\"pwr\":%u,"
         "\"tx_en\":%d,\"tx_int\":%u,\"tx_pkt\":%u,"
-        "\"batt_mv\":%u,\"batt_pct\":%u,\"license\":%u,"
-        "\"sniff\":%d,",
+"\"batt_mv\":%u,\"batt_pct\":%u,\"batt_raw\":%d,\"batt_pin\":%d,\"batt_cal\":%u,\"license\":%u,"
+        "\"sniff\":%d,\"usb\":%d,",
         cfg.freq, (unsigned long)cfg.datarate, (unsigned)cfg.deviation, (unsigned)cfg.power,
         cfg.tx_enabled, (unsigned)cfg.tx_interval, (unsigned)cfg.tx_packets,
-        (unsigned)readBatteryMv(), (unsigned)getBatteryPercent(),
-        (unsigned)licenseValid, snifferActive ? 1 : 0);
+        (unsigned)readBatteryMv(), (unsigned)getBatteryPercent(), readBatteryRaw(),
+        (int)cfg.batt_pin,
+        cfg.batt_cal_raw > 0 ? cfg.batt_cal_mv : 0,
+        (unsigned)licenseValid, snifferActive ? 1 : 0, isUsbPowered() ? 1 : 0);
 
     // Датчики
     pos += snprintf(buf + pos, sizeof(buf) - pos, "\"sensors\":[");
@@ -1090,6 +1147,39 @@ static void processCommand(const char *cmd) {
         configDirty = true;
         sendLog("Settings applied");
     }
+    else if (strcmp(cmdName, "battpin") == 0) {
+        int32_t pin = 255;
+        if (jsonGetInt(cmd, "pin", &pin)) {
+            bool validPin = (pin == 255) || (pin >= A0 && pin <= A7);
+            if (validPin) {
+                cfg.batt_pin = (uint8_t)pin;
+                configDirty = true;
+                char lb[64];
+                if (pin == 255) {
+                    snprintf(lb, sizeof(lb), "Batt src: VDDH internal, raw=%d (%d mV)", readBatteryRaw(), readBatteryMv());
+                } else {
+                    snprintf(lb, sizeof(lb), "Batt pin set to A%d (pin %d), raw=%d", (int)(pin - A0), (int)pin, readBatteryRaw());
+                }
+                sendLog(lb);
+            } else {
+                sendLog("Batt pin: 255=VDDH or A0..A7 (Arduino pin 14..21)");
+            }
+        }
+    }
+    else if (strcmp(cmdName, "battcal") == 0) {
+        int32_t mv = 0;
+        if (jsonGetInt(cmd, "mv", &mv) && mv > 0 && mv < 20000) {
+            int raw = readBatteryRaw();
+            cfg.batt_cal_raw = (uint16_t)raw;
+            cfg.batt_cal_mv = (uint16_t)mv;
+            configDirty = true;
+            char lb[64];
+            snprintf(lb, sizeof(lb), "Battery calibrated: raw=%d -> %d mV", raw, (int)mv);
+            sendLog(lb);
+        } else {
+            sendLog("battcal: нужно указать mv (реальное напряжение, мВ)");
+        }
+    }
     else if (strcmp(cmdName, "sniff_start") == 0) {
         if (cfg.tx_enabled) {
     cfg.tx_enabled = 1;
@@ -1156,13 +1246,14 @@ static void setupBLE() {
     // Connection callbacks
     Bluefruit.Periph.setConnectCallback([](uint16_t conn_handle) {
         bleConnected = true;
-        // Don't send anything here — phone hasn't written CCCD yet
+        bleHadConnection = true;  // было реальное подключение → можно спать при отключении
+        // Don't send any connection here — phone hasn't written CCCD yet
     });
     Bluefruit.Periph.setDisconnectCallback([](uint16_t conn_handle, uint8_t reason) {
         bleConnected = false;
         if (snifferActive) sniffer_stop();
-        // After disconnect → deep sleep (will wake on button press → reset → advertise again)
-        enterDeepSleep();
+        // Авто-сон отключён: устройство остаётся в анонсе, чтобы телефон мог переподключиться.
+        // (Сон можно добавить позже, когда будет готова стабильная работа с батареей.)
     });
 
     // Configure and Start Device Information Service
@@ -1206,6 +1297,8 @@ static void blinkLed(uint8_t times, uint16_t delayMs) {
 void setup() {
     // Инициализация Serial (для отладки)
     Serial.begin(115200);
+    Serial.println("DBG: setup start");
+    Serial.flush();
 
     // LED
     pinMode(PIN_STATUS_LED, OUTPUT);
@@ -1219,14 +1312,24 @@ void setup() {
 
     // Загрузка конфигурации
     loadConfig();
+    Serial.println("DBG: config loaded");
+    Serial.flush();
     cfg.tx_enabled = 1;  // авто-TX всегда включён после старта
     lastAutoTx = millis() / 1000 - cfg.tx_interval;  // отправить сразу при старте
 
     // Инициализация BLE (до CC1101, так как Bluetooth тоже использует радиочастоту)
+    Serial.println("DBG: before setupBLE");
+    Serial.flush();
     setupBLE();
+    Serial.println("DBG: after setupBLE");
+    Serial.flush();
 
     // Инициализация CC1101
+    Serial.println("DBG: before radio.init");
+    Serial.flush();
     radio.init();
+    Serial.println("DBG: after radio.init");
+    Serial.flush();
     sendLog("CC1101 initialized OK");
     // Настраиваем частоту из конфига
     uint32_t freqHz = (cfg.freq == 433) ? 433000000UL : 315000000UL;
@@ -1245,6 +1348,8 @@ void setup() {
     blinkLed(3, 200);
     sendLog("TPMS-NRF52840 ready");
     sendStatus();
+    Serial.println("DBG: setup done");
+    Serial.flush();
 
     // BLE power management timer
     bleStartTime = millis();
@@ -1254,12 +1359,8 @@ void setup() {
 // MAIN LOOP
 // =========================================================================
 void loop() {
-    // 0. BLE power management: 1 min timeout → deep sleep
-    if (!bleConnected && bleAdvertising) {
-        if (millis() - bleStartTime > BLE_ADVERTISE_TIMEOUT_MS) {
-            enterDeepSleep();  // never returns
-        }
-    }
+    // 0. BLE power management отключён: устройство анонсируется непрерывно, пока работает.
+    //    (Сон отключён на время отладки, чтобы телефон всегда мог найти и переподключиться.)
 
     // 1. Обработка BLE команд
     if (cmdReady) {
@@ -1296,16 +1397,15 @@ void loop() {
         }
     }
 
-    // 4. Проверка батареи
-    if (isBatteryCritical() && cfg.tx_enabled) {
-        cfg.tx_enabled = 0;
-        if (snifferActive) sniffer_stop();
-        radio.setIdleState();
-        sendLog("Battery critical! Stopped.");
-        blinkLed(5, 500);
-
-        // Спим для экономии
-        delay(5000);
+    // 4. Проверка батареи (только индикация, НЕ отключает авто-TX).
+    //    Ранее при "критичной" батарее авто-TX блокировался, но датчик батареи на A4
+    //    может читать ~0 мВ (делитель/пин не подключён), что отключало передачу. Убираем блокировку.
+    if (isBatteryCritical()) {
+        static uint32_t lastBattWarn = 0;
+        if (millis() - lastBattWarn > 30000) {
+            lastBattWarn = millis();
+            sendLog("Battery low warning");
+        }
     }
 
     // 5. LED индикация при передаче

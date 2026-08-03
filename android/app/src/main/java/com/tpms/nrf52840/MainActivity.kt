@@ -35,6 +35,7 @@ class MainActivity : AppCompatActivity() {
         val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         const val TAG = "TPMS"
         const val REQUEST_PERMISSIONS = 1001
+        const val STATUS_POLL_INTERVAL_MS = 4000L
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -60,6 +61,19 @@ class MainActivity : AppCompatActivity() {
 
     private val sensorViews = mutableListOf<SensorViewHolder>()
 
+    private val statusPollRunnable = object : Runnable {
+        override fun run() {
+            if (isConnected && isNusReady) {
+                sendCommand("\"cmd\":\"status\"", quiet = true)
+            }
+            handler.postDelayed(this, STATUS_POLL_INTERVAL_MS)
+        }
+    }
+
+    private var lastSniffSummary: String? = null
+
+    private val prefs by lazy { getSharedPreferences("tpms_prefs", Context.MODE_PRIVATE) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -71,8 +85,23 @@ class MainActivity : AppCompatActivity() {
 
         initSensorsUi()
         initButtons()
+        initTabs()
         checkPermissions()
         tryAutoConnect()
+        handler.postDelayed(statusPollRunnable, STATUS_POLL_INTERVAL_MS)
+    }
+
+    private fun initTabs() {
+        binding.tabLayout.addOnTabSelectedListener(object : com.google.android.material.tabs.TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: com.google.android.material.tabs.TabLayout.Tab) {
+                val settings = tab.position == 1
+                binding.scrollMain.visibility = if (settings) View.GONE else View.VISIBLE
+                binding.scrollSettings.visibility = if (settings) View.VISIBLE else View.GONE
+            }
+
+            override fun onTabUnselected(tab: com.google.android.material.tabs.TabLayout.Tab) {}
+            override fun onTabReselected(tab: com.google.android.material.tabs.TabLayout.Tab) {}
+        })
     }
 
     private fun tryAutoConnect() {
@@ -90,7 +119,9 @@ class MainActivity : AppCompatActivity() {
             selectedDevice = device
             connect(device)
         } else {
-            Log.d(TAG, "No bonded TPMS device found")
+            Log.d(TAG, "No bonded TPMS device found, starting scan")
+            log("Поиск устройства...")
+            startScan()
         }
     }
 
@@ -136,6 +167,64 @@ class MainActivity : AppCompatActivity() {
                 log("Ключ должен быть 8 hex символов")
             }
         }
+        binding.btnSaveBattPin.setOnClickListener {
+            val pin = binding.etBattPin.text.toString().toIntOrNull()
+            if (pin != null && (pin == 255 || pin in 14..21)) {
+                sendCommand("\"cmd\":\"battpin\",\"pin\":$pin")
+            } else {
+                log("Пин батареи: 255=VDDH (внутренний) или 14..21 (A0..A7)")
+            }
+        }
+        binding.btnBattCal.setOnClickListener {
+            val mv = binding.etBattCalMv.text.toString().toIntOrNull()
+            if (mv != null && mv > 0) {
+                sendCommand("\"cmd\":\"battcal\",\"mv\":$mv")
+            } else {
+                log("Введи реальное напряжение в мВ (например 3540)")
+            }
+        }
+        binding.btnReset.setOnClickListener { sendCommand("\"cmd\":\"reset\"") }
+        binding.btnCalcBattLife.setOnClickListener { calcBatteryLife() }
+        binding.etCapacity.setText(prefs.getInt("batt_capacity_mah", 500).toString())
+    }
+
+    private fun calcBatteryLife() {
+        val capacity = binding.etCapacity.text.toString().toIntOrNull() ?: 0
+        val interval = binding.etInterval.text.toString().toIntOrNull() ?: 0
+        val packets = binding.etPackets.text.toString().toIntOrNull() ?: 0
+        if (capacity <= 0 || interval <= 0 || packets < 1) {
+            binding.tvBattLifeResult.text = "Укажи ёмкость, интервал и пакеты"
+            binding.tvBattLifeResult.setTextColor(getColor(android.R.color.holo_red_light))
+            return
+        }
+        prefs.edit().putInt("batt_capacity_mah", capacity).apply()
+
+        // Модель среднего тока.
+        // База (постоянно): BLE-анонс ~1.0 мА + CC1101 в IDLE ~1.5 мА.
+        val baseMa = 2.5
+        // Передачи: за burst идут 4 датчика x packets пакетов. Пакет ~60 мс активной
+        // работы при ~30 мА (включая delay(30) между датчиками), пауза 100 мс между
+        // пакетами при ~15 мА. Всё это усредняется на интервал.
+        val burstMas = 4.0 * packets * (30.0 * 0.06) + (packets - 1) * (15.0 * 0.1)
+        val txMa = burstMas / interval
+        val avgMa = baseMa + txMa
+        val hours = capacity / avgMa
+        val burstsPerDay = 86400.0 / interval
+        val txMahPerDay = burstMas * burstsPerDay / 3600.0
+
+        val res = StringBuilder()
+        res.appendLine("Базовый ток (BLE+IDLE): ${"%.2f".format(baseMa)} мА")
+        res.appendLine("Передачи: +${"%.3f".format(txMa)} мА " +
+            "(${burstsPerDay.toInt()} burst/сут ≈ ${"%.2f".format(txMahPerDay)} мАч/сут)")
+        res.appendLine("Средний ток: ${"%.2f".format(avgMa)} мА")
+        res.append("Ресурс: ")
+        res.append(
+            if (hours >= 48) "~${hours.toInt() / 24} сут ${hours.toInt() % 24} ч"
+            else if (hours >= 1) "~%.1f ч".format(hours)
+            else "~%.0f мин".format(hours * 60)
+        )
+        binding.tvBattLifeResult.text = res.toString()
+        binding.tvBattLifeResult.setTextColor(getColor(android.R.color.holo_green_light))
     }
 
     private fun sendSensor(idx: Int) {
@@ -443,7 +532,7 @@ class MainActivity : AppCompatActivity() {
     private val pendingChunks = mutableListOf<Byte>()
     private var isSendingChunks = false
 
-    private fun sendCommandInternal(payload: String) {
+    private fun sendCommandInternal(payload: String, quiet: Boolean = false) {
         val msg = "{$payload}\n"
         val rx = rxCharacteristic
         if (rx == null || bluetoothGatt == null) {
@@ -462,13 +551,13 @@ class MainActivity : AppCompatActivity() {
             rx.value = bytes
             val ok = bluetoothGatt?.writeCharacteristic(rx) ?: false
             Log.d(TAG, "TX: $msg ok=$ok")
-            runOnUiThread { log("→ $msg") }
+            if (!quiet) runOnUiThread { log("→ $msg") }
         } else {
             pendingChunks.clear()
             pendingChunks.addAll(bytes.toList())
             isSendingChunks = false
             Log.d(TAG, "TX chunked (${bytes.size} bytes in ${(bytes.size + chunkSize - 1) / chunkSize} chunks): $msg")
-            runOnUiThread { log("→ $msg (${bytes.size}b)") }
+            if (!quiet) runOnUiThread { log("→ $msg (${bytes.size}b)") }
             sendNextChunk()
         }
     }
@@ -487,21 +576,23 @@ class MainActivity : AppCompatActivity() {
         bluetoothGatt?.writeCharacteristic(rx)
     }
 
-    private fun sendCommand(payload: String) {
+    private fun sendCommand(payload: String, quiet: Boolean = false) {
         if (!isConnected || bluetoothGatt == null) {
-            log("Не подключено")
+            if (!quiet) log("Не подключено")
             return
         }
         if (!isNusReady) {
-            pendingMessages.add(payload)
-            log("В очереди: $payload")
+            if (!quiet) {
+                pendingMessages.add(payload)
+                log("В очереди: $payload")
+            }
             return
         }
         if (pendingMessages.isNotEmpty()) {
-            pendingMessages.add(payload)
+            if (!quiet) pendingMessages.add(payload)
             return
         }
-        sendCommandInternal(payload)
+        sendCommandInternal(payload, quiet)
     }
 
     private fun onNusData(data: String) {
@@ -539,9 +630,9 @@ class MainActivity : AppCompatActivity() {
             for (i in 0 until minOf(it.length(), sensorViews.size)) {
                 val s = it.getJSONObject(i)
                 val h = sensorViews[i]
-                h.etId.setText(s.optString("id", "00000000"))
-                h.etPressure.setText(s.optInt("p", 2300).toString())
-                h.etTemperature.setText(s.optInt("t", 20).toString())
+                if (!h.etId.hasFocus()) h.etId.setText(s.optString("id", "00000000"))
+                if (!h.etPressure.hasFocus()) h.etPressure.setText(s.optInt("p", 2300).toString())
+                if (!h.etTemperature.hasFocus()) h.etTemperature.setText(s.optInt("t", 20).toString())
                 h.cbEnabled.isChecked = s.optInt("en", 0) == 1
             }
         }
@@ -551,8 +642,8 @@ class MainActivity : AppCompatActivity() {
         binding.rb433.isChecked = freq == 433
 
         isAutoTx = data.optInt("tx_en", 0) == 1
-        binding.etInterval.setText(data.optInt("tx_int", 360).toString())
-        binding.etPackets.setText(data.optInt("tx_pkt", 2).toString())
+        if (!binding.etInterval.hasFocus()) binding.etInterval.setText(data.optInt("tx_int", 360).toString())
+        if (!binding.etPackets.hasFocus()) binding.etPackets.setText(data.optInt("tx_pkt", 2).toString())
 
         val licensed = data.optInt("license", 0) == 1
         binding.tvLicense.text = if (licensed) "Лицензия активирована" else "Без лицензии"
@@ -563,12 +654,25 @@ class MainActivity : AppCompatActivity() {
 
         val mv = data.optInt("batt_mv", 0)
         val pct = data.optInt("batt_pct", 0)
-        binding.tvBattery.text = "Батарея: ${mv}mV (${pct}%)"
-        binding.tvBattery.setTextColor(
-            if (pct < 10) getColor(android.R.color.holo_red_light)
-            else if (pct < 30) getColor(android.R.color.holo_orange_light)
-            else getColor(android.R.color.holo_green_light)
-        )
+        val raw = data.optInt("batt_raw", 0)
+        val pin = data.optInt("batt_pin", 0)
+        val calMv = data.optInt("batt_cal", 0)
+        val usb = data.optInt("usb", 0) == 1
+        val pinLabel = if (pin == 255) "VDDH" else "pin=$pin"
+
+        val usbMode = usb || (mv == 0 && raw > 0)
+        binding.batteryIcon.setPercent(if (usbMode) -1 else pct)
+        binding.tvBattDetails.text = buildString {
+            append("Источник: $pinLabel · raw=$raw\n")
+            append("Напряжение: ${"%.2f".format(mv / 1000.0)} В ($pct%)\n")
+            append("Калибровка: ${if (calMv > 0) "${calMv}mV" else "нет"}\n")
+            if (usb) append("Питание: USB (АКБ не измеряется)\n")
+            append("Обновлено: " +
+                java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()))
+        }
+        if (calMv > 0 && !binding.etBattCalMv.hasFocus()) binding.etBattCalMv.setText(calMv.toString())
+        if (pin > 0 && !binding.etBattPin.hasFocus()) binding.etBattPin.setText(pin.toString())
+        else if (pin <= 0 && !binding.etBattPin.hasFocus()) binding.etBattPin.setText("255")
 
         val sniffActive = data.optInt("sniff", 0) == 1
         val disc = data.optJSONArray("disc")
@@ -582,7 +686,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        log(sb.toString().trimEnd())
+        val summary = sb.toString().trimEnd()
+        if (summary != lastSniffSummary) {
+            lastSniffSummary = summary
+            log(summary)
+        }
     }
 
     private fun updateConnectionState() {
