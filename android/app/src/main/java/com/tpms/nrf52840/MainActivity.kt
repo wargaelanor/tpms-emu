@@ -71,6 +71,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var lastSniffSummary: String? = null
+    private var sniffRunning = false
 
     private val prefs by lazy { getSharedPreferences("tpms_prefs", Context.MODE_PRIVATE) }
 
@@ -148,7 +149,6 @@ class MainActivity : AppCompatActivity() {
             val packets = binding.etPackets.text.toString().toIntOrNull() ?: 2
             sendCommand("\"cmd\":\"autotx\",\"interval\":$interval,\"packets\":$packets")
         }
-        var sniffRunning = false
         binding.btnSniffToggle.setOnClickListener {
             sniffRunning = !sniffRunning
             binding.btnSniffToggle.text = if (sniffRunning) "Стоп" else "Старт"
@@ -675,6 +675,12 @@ class MainActivity : AppCompatActivity() {
         else if (pin <= 0 && !binding.etBattPin.hasFocus()) binding.etBattPin.setText("255")
 
         val sniffActive = data.optInt("sniff", 0) == 1
+        // Синхронизируем кнопку с реальным состоянием (сниффер может остановиться сам,
+        // когда найдены все датчики — тогда кнопка снова должна стать «Старт»)
+        if (sniffRunning != sniffActive) {
+            sniffRunning = sniffActive
+            binding.btnSniffToggle.text = if (sniffRunning) "Стоп" else "Старт"
+        }
         val disc = data.optJSONArray("disc")
         val sb = StringBuilder()
         sb.appendLine("Сниффер: ${if (sniffActive) "активен" else "выкл"}")

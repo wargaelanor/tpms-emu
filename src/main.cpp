@@ -43,8 +43,8 @@ extern "C" {
 #define CONFIG_FILENAME      "tpms_cfg"
 #define MAX_SENSORS          4
 #define MAX_PAYLOAD_BITS     72     // 66 бит payload + preamble
-#define DEFAULT_FREQ_315     315
-#define DEFAULT_FREQ_433     433
+#define DEFAULT_FREQ_315     0    // 0 = 315 МГц (см. cfg.freq, uint8_t)
+#define DEFAULT_FREQ_433     1    // 1 = 433 МГц
 #define DEFAULT_DATARATE     10000  // 10 kbaud
 #define DEFAULT_DEVIATION    38000  // 38 kHz
 #define DEFAULT_POWER        7      // PA table index 0-7 (7 = 10 dBm max for 315 MHz)
@@ -76,7 +76,7 @@ struct __attribute__((packed)) TPMSConfig {
     uint8_t     tx_enabled;     // авто-TX включён
     uint16_t    tx_interval;    // интервал авто-TX (сек)
     uint8_t     tx_packets;     // пакетов за burst
-    uint8_t     freq;           // 315 или 433
+    uint8_t     freq;           // 0 = 315 MHz, 1 = 433 MHz (315/433 do not fit uint8_t)
     SensorConfig sensors[MAX_SENSORS]; // 4 * 7 = 28 байт
     uint8_t     license_key[4]; // 4 байта лицензии (упрощённо)
     uint32_t    trial_start;    // начало триала (unix timestamp)
@@ -103,6 +103,11 @@ struct DiscoveredSensor {
 static CC1101 radio(PIN_CC1101_CS, PIN_CC1101_GDO0, PIN_CC1101_GDO2);
 static TPMSConfig cfg;
 static DiscoveredSensor discovered[MAX_SENSORS];
+
+// cfg.freq хранится как uint8_t (значения 315/433 не влезают в байт):
+//   0 = 315 МГц, 1 = 433 МГц. Ниже конвертеры в частоту и в JSON-значение.
+static uint32_t getFreqHz() { return (cfg.freq == 1) ? 433000000UL : 315000000UL; }
+static int getFreqJson() { return (cfg.freq == 1) ? 433 : 315; }
 
 // Flash config storage - page 200 (0xC8000), between app and bootloader
 #define CONFIG_FLASH_PAGE  200
@@ -607,31 +612,31 @@ static void sendBurst() {
 // =========================================================================
 // Differential Manchester Decode (для сниффера)
 // =========================================================================
-static int16_t dm_decode(const uint8_t *inBits, uint16_t inLen, uint8_t *outBits) {
-    // DM decode: каждые 2 бита → 1 бит
-    // 0: переход, 1: без перехода
-    uint16_t outLen = inLen / 2;
-    memset(outBits, 0, (outLen + 7) / 8);
+static uint16_t dm_decode(const uint8_t *dmBits, uint16_t dmLen, uint8_t *outBits) {
+    // Differential Manchester decode (как в рабочем TPMS-Emulator).
+    // Внутри каждого битового периода DM всегда есть переход (пара 01/10),
+    // поэтому значение бита зависит от перехода на ГРАНИЦЕ бита:
+    //   b1 == prevLevel → нет перехода на границе → бит 1
+    //   b1 != prevLevel → есть переход на границе → бит 0
+    // Пара 00/11 внутри периода — некорректный DM, пропускаем.
+    uint16_t outPos = 0;
+    uint8_t prevLevel = 0;  // начальный уровень = конец preamble (0)
 
-    uint8_t prevLevel = 1;
-    uint16_t outIdx = 0;
+    for (uint16_t i = 0; i + 1 < dmLen && outPos < 128; i += 2) {
+        uint8_t b1 = get_bit(dmBits, i);
+        uint8_t b2 = get_bit(dmBits, i + 1);
+        if (b1 == b2) continue;  // некорректная DM-пара (00 или 11)
 
-    for (uint16_t i = 0; i + 1 < inLen; i += 2) {
-        uint8_t a = get_bit(inBits, i);
-        uint8_t b = get_bit(inBits, i + 1);
-
-        if (a != b) {
-            // Переход → бит 0
-            set_bit(outBits, outIdx++, 0);
-            prevLevel = b;
+        if (b1 == prevLevel) {
+            set_bit(outBits, outPos, 1);
         } else {
-            // Без перехода → бит 1
-            set_bit(outBits, outIdx++, 1);
-            prevLevel = a;
+            set_bit(outBits, outPos, 0);
         }
+        outPos++;
+        prevLevel = b2;
     }
 
-    return outIdx;
+    return outPos;
 }
 
 // =========================================================================
@@ -639,124 +644,98 @@ static int16_t dm_decode(const uint8_t *inBits, uint16_t inLen, uint8_t *outBits
 // =========================================================================
 static bool sniffer_decode_packet(const uint8_t *data, uint8_t len,
                                    DiscoveredSensor *result) {
-    // Конвертируем байты в биты
+    if (len < 5) return false;
+
     uint16_t totalBits = len * 8;
-    uint8_t *rawBits = (uint8_t *)malloc((totalBits + 7) / 8);
-    if (!rawBits) return false;
-    memcpy(rawBits, data, len);
 
-    // DM decode
-    uint8_t *dmBits = (uint8_t *)malloc((totalBits / 2 + 7) / 8);
-    if (!dmBits) { free(rawBits); return false; }
+    // Ищем preamble "111110" в СЫРЫХ битах, с конца (последний валидный
+    // преамбул — это реальный сигнал, а не шум до него).
+    // Нужно >= 136 сырых бит после преамбулы (68 DM-бит * 2).
+    int preambleEnd = -1;
+    for (int16_t i = (int16_t)totalBits - 7; i >= 0; i--) {
+        bool b0 = get_bit(data, i);
+        bool b1 = get_bit(data, i + 1);
+        bool b2 = get_bit(data, i + 2);
+        bool b3 = get_bit(data, i + 3);
+        bool b4 = get_bit(data, i + 4);
+        bool b5 = get_bit(data, i + 5);
+        if (b0 && b1 && b2 && b3 && b4 && !b5) {
+            uint16_t bitsAfter = totalBits - (i + 6);
+            if (bitsAfter >= 136) {
+                preambleEnd = i + 6;
+                break;
+            }
+        }
+    }
+    if (preambleEnd < 0) return false;
 
-    int16_t decodedLen = dm_decode(rawBits, totalBits, dmBits);
-    free(rawBits);
-
-    if (decodedLen < 88) {  // минимум preamble(16) + sync(6) + payload(66) = 88
-        free(dmBits);
-        return false;
+    // Копируем до 136 сырых бит после преамбулы и DM-декодируем
+    uint8_t dmBits[17];
+    memset(dmBits, 0, sizeof(dmBits));
+    uint16_t maxBits = totalBits - preambleEnd;
+    if (maxBits > 136) maxBits = 136;
+    for (uint16_t i = 0; i < maxBits; i++) {
+        if (get_bit(data, preambleEnd + i)) set_bit(dmBits, i, 1);
     }
 
-    // Ищем preamble: 16 нулей + "111110"
-    int syncPos = -1;
-    for (int i = 0; i <= decodedLen - 22; i++) {
-        // Проверяем 16 нулей
-        bool preambleOk = true;
-        for (int j = 0; j < 16 && (i + j) < decodedLen; j++) {
-            if (get_bit(dmBits, i + j) != 0) { preambleOk = false; break; }
-        }
-        if (!preambleOk) continue;
+    uint8_t decoded[9];
+    memset(decoded, 0, sizeof(decoded));
+    uint16_t decodedLen = dm_decode(dmBits, maxBits, decoded);
+    if (decodedLen < 68) return false;
 
-        // Проверяем sync "111110"
-        uint8_t syncCheck[] = {1, 1, 1, 1, 1, 0};
-        bool syncOk = true;
-        for (int j = 0; j < 6 && (i + 16 + j) < decodedLen; j++) {
-            if (get_bit(dmBits, i + 16 + j) != syncCheck[j]) { syncOk = false; break; }
-        }
-        if (syncOk) { syncPos = i; break; }
-    }
+    // DM-поток: '1' + 66 payload + '1' = 68 бит. Пропускаем стартовый бит.
+    #define DECODE_OFFSET 1
 
-    if (syncPos < 0) { free(dmBits); return false; }
-
-    // Извлекаем payload начиная с позиции syncPos + 22
-    uint16_t payloadStart = syncPos + 22;
-    if (payloadStart + 66 > decodedLen) { free(dmBits); return false; }
-
-    // ID: 28 бит, LSB first
+    // ID: 28 бит, MSB first
     uint32_t id = 0;
     for (int i = 0; i < 28; i++) {
-        if (get_bit(dmBits, payloadStart + i)) {
-            id |= (1UL << i);
-        }
+        id = (id << 1) | get_bit(decoded, DECODE_OFFSET + i);
     }
 
-    // Battery flag
-    uint8_t batFlag = get_bit(dmBits, payloadStart + 28);
+    // Status: bit0 = battery_low, bits 1-2 = counter
+    uint8_t batFlag = get_bit(decoded, DECODE_OFFSET + 28);
+    uint8_t counter = (get_bit(decoded, DECODE_OFFSET + 29) << 1) |
+                       get_bit(decoded, DECODE_OFFSET + 30);
 
-    // Counter: 2 бита
-    uint8_t counter = get_bit(dmBits, payloadStart + 29) |
-                     (get_bit(dmBits, payloadStart + 30) << 1);
-
-    // Pressure inverted: 11 бит, LSB first
-    uint16_t presInv = 0;
-    for (int i = 0; i < 11; i++) {
-        if (get_bit(dmBits, payloadStart + 33 + i)) {
-            presInv |= (1 << i);
-        }
-    }
-
-    // Pressure direct: 11 бит, LSB first
-    uint16_t presDirect = 0;
-    for (int i = 0; i < 11; i++) {
-        if (get_bit(dmBits, payloadStart + 44 + i)) {
-            presDirect |= (1 << i);
-        }
-    }
-
-    // Проверяем: presDirect должен быть ~ 4095 - presInv
-    uint16_t pressure = presDirect;
-    if (presInv != (4095 - presDirect)) {
-        // Попробуем инвертированное
-        pressure = 4095 - presInv;
-    }
-
-    // Temperature: 3 бита, XOR 0x07
-    uint8_t tempEnc = get_bit(dmBits, payloadStart + 55) |
-                     (get_bit(dmBits, payloadStart + 56) << 1) |
-                     (get_bit(dmBits, payloadStart + 57) << 2);
-    int8_t temperature = (int8_t)((tempEnc ^ 0x07) * 10 - 40);
-
-    // CRC check
-    uint8_t crcCalc = 0;
-    uint8_t crcRx = 0;
-    // Собираем первые 58 бит payload
-    uint8_t payload58[8];
-    memset(payload58, 0, sizeof(payload58));
-    for (int i = 0; i < 58; i++) {
-        if (get_bit(dmBits, payloadStart + i)) {
-            payload58[i / 8] |= (1 << (7 - (i % 8)));
-        }
-    }
-    crcCalc = calculate_crc8_pmv(payload58, 8);
-
+    // Pressure: 8 бит (bits 34-41), MSB first -> kPa = (byte - 40) * 2.48
+    uint8_t pByte = 0;
     for (int i = 0; i < 8; i++) {
-        if (get_bit(dmBits, payloadStart + 58 + i)) {
-            crcRx |= (1 << i);
-        }
+        pByte = (pByte << 1) | get_bit(decoded, DECODE_OFFSET + 34 + i);
     }
 
-    free(dmBits);
+    // Temperature: 8 бит (bits 50-57), MSB first -> C = byte - 40
+    uint8_t tByte = 0;
+    for (int i = 0; i < 8; i++) {
+        tByte = (tByte << 1) | get_bit(decoded, DECODE_OFFSET + 50 + i);
+    }
 
-    // Заполняем результат
+    // CRC-8 over первых 58 бит payload (6 нулей спереди, как на TX)
+    uint8_t crcBuf[8];
+    memset(crcBuf, 0, sizeof(crcBuf));
+    for (uint16_t i = 0; i < 58; i++) {
+        if (get_bit(decoded, DECODE_OFFSET + i)) {
+            crcBuf[(6 + i) / 8] |= (1 << (7 - ((6 + i) % 8)));
+        }
+    }
+    uint8_t crcCalc = calculate_crc8_pmv(crcBuf, 8);
+
+    uint8_t rxCrc = 0;
+    for (int i = 0; i < 8; i++) {
+        rxCrc = (rxCrc << 1) | get_bit(decoded, DECODE_OFFSET + 58 + i);
+    }
+
+    if (crcCalc != rxCrc) return false;
+
+    // Заполняем результат (pressure хранится как кПа*10)
     result->id = id;
-    result->pressure = pressure;
-    result->temperature = temperature;
+    result->pressure = (uint16_t)((float)(pByte - 40) * 2.48f * 10.0f + 0.5f);
+    result->temperature = (int8_t)((int)tByte - 40);
     result->counter = counter;
     result->bat_flag = batFlag;
     result->rssi = radio.getRssi();
-    result->valid = (crcCalc == crcRx);
+    result->valid = true;
 
-    return result->valid;
+    return true;
 }
 
 // =========================================================================
@@ -767,12 +746,22 @@ static void sniffer_start() {
     radio.setIdleState();
     radio.flushRxFifo();
 
-    // Настраиваем для приёма
-    radio.writeReg(CC1101_PKTCTRL0, 0x02);  // Infinite length, no CRC, normal FIFO
-    radio.writeReg(CC1101_PKTLEN, 0xFF);     // максимальная длина
-    radio.writeReg(CC1101_MDMCFG2, 0x10);   // 2-FSK, no Manchester, no sync
-    radio.writeReg(CC1101_IOCFG0, 0x06);    // GDO0 = sync detect
+    // Полная перенастройка CC1101 на приём (как в рабочем TPMS-Emulator):
+    // частота + band-регистры, packet-регистры, 2-FSK без sync, скорость, девиация.
+    float freq = getFreqJson() == 433 ? 433.0f : 315.0f;
+    radio.setFreqConfig(freq);
+    radio.setFreq(freq);
+    radio.setRxConfig();
+    radio.setModulation(0);   // 2-FSK (MDMCFG2 MOD_FORMAT=000)
+    radio.setSyncMode(0);     // без sync/preamble
+    radio.setManc(0);         // DM декодируется в ПО — аппаратный Manchester НЕ включаем
+    radio.setDRate(cfg.datarate);
+    radio.setDeviation((float)cfg.deviation / 10.0f);
 
+    // Калибровка после записи частоты и входа в RX
+    radio.sendCommand(CC1101_SCAL);
+    delay(3);
+    radio.flushRxFifo();
     radio.setRxState();
     snifferActive = true;
 
@@ -810,56 +799,86 @@ static void sniffer_stop() {
 static void sniffer_loop() {
     if (!snifferActive) return;
 
-    uint8_t rxBytes = radio.getRxBytes();
-    if (rxBytes == 0 || (rxBytes & 0x80)) {
-        if (rxBytes & 0x80) radio.flushRxFifo();
-        return;
-    }
+    // Накопление FIFO: при бесконечной длине пакета CC1101 отдаёт непрерывный
+    // поток бит, поэтому читаем всё доступное и декодируем по мере накопления,
+    // сбрасывая буфер только при успешном декодировании (как в TPMS-Emulator).
+    static uint8_t acc_buf[128];
+    static uint16_t acc_len = 0;
 
-    uint8_t len = rxBytes & 0x7F;
-    if (len < 10 || len > 30) {
+    // Проверяем, что CC1101 ещё в RX — иначе перезапускаем
+    uint8_t marc = radio.getMarcState();
+    if (marc != CC1101_MARCSTATE_RX) {
+        radio.setIdleState();
+        delay(1);
         radio.flushRxFifo();
-        return;
-    }
-
-    uint8_t buf[32];
-    radio.readBurstReg(CC1101_RXFIFO, buf, len);
-    radio.flushRxFifo();
-
-    // Проверяем, что в RX режиме
-    uint8_t state = radio.getMarcState();
-    if (state != CC1101_MARCSTATE_RX) {
+        radio.sendCommand(CC1101_SCAL);
+        delay(3);
         radio.setRxState();
+        acc_len = 0;
     }
 
-    DiscoveredSensor ds;
-    if (sniffer_decode_packet(buf, len, &ds)) {
-        // Проверяем, не нашли ли уже этот ID
-        int slot = -1;
-        for (int i = 0; i < MAX_SENSORS; i++) {
-            if (discovered[i].valid && discovered[i].id == ds.id) {
-                // Обновляем данные
-                discovered[i] = ds;
-                slot = i;
-                break;
+    // Читаем все доступные байты из RX FIFO
+    uint8_t rxBytes = radio.getRxBytes() & 0x7F;
+    if (rxBytes > 0) {
+        if (rxBytes > 64) rxBytes = 64;
+        if (acc_len + rxBytes <= sizeof(acc_buf)) {
+            radio.readBurstReg(CC1101_RXFIFO, acc_buf + acc_len, rxBytes);
+            acc_len += rxBytes;
+        }
+    }
+
+    // Пытаемся декодировать накопленные данные
+    if (acc_len >= 10) {
+        DiscoveredSensor ds;
+        if (sniffer_decode_packet(acc_buf, (uint8_t)acc_len, &ds)) {
+            // Проверяем, не нашли ли уже этот ID
+            int slot = -1;
+            for (int i = 0; i < MAX_SENSORS; i++) {
+                if (discovered[i].valid && discovered[i].id == ds.id) {
+                    // Обновляем данные
+                    discovered[i] = ds;
+                    slot = i;
+                    break;
+                }
+                if (!discovered[i].valid && slot < 0) {
+                    slot = i;
+                }
             }
-            if (!discovered[i].valid && slot < 0) {
-                slot = i;
+
+            if (slot >= 0 && !discovered[slot].valid) {
+                // Новый датчик
+                discovered[slot] = ds;
+            }
+
+            // Отправляем данные в BLE
+            char buf2[160];
+            snprintf(buf2, sizeof(buf2),
+                     "{\"t\":\"pkt\",\"id\":\"%08X\",\"p\":%d,\"tmp\":%d,\"c\":%d,\"rssi\":%d}",
+                     (unsigned)ds.id, (unsigned)ds.pressure, (int)ds.temperature,
+                     (int)ds.counter, (int)ds.rssi);
+            bleSendChunked(buf2);
+
+            acc_len = 0;
+
+            // Автоостановка: когда найдены все датчики, останавливаем сниффер
+            // и применяем обнаруженные значения (sniffer_stop сам применяет и сохраняет)
+            int found = 0;
+            for (int i = 0; i < MAX_SENSORS; i++) {
+                if (discovered[i].valid) found++;
+            }
+            if (found >= MAX_SENSORS) {
+                sendLog("All sensors found, stopping sniffer");
+                sniffer_stop();
+                return;
             }
         }
+    }
 
-        if (slot >= 0 && !discovered[slot].valid) {
-            // Новый датчик
-            discovered[slot] = ds;
-        }
-
-        // Отправляем данные в BLE
-        char buf2[160];
-        snprintf(buf2, sizeof(buf2),
-                 "{\"t\":\"pkt\",\"id\":\"%08X\",\"p\":%d,\"tmp\":%d,\"c\":%d,\"rssi\":%d}",
-                 (unsigned)ds.id, (unsigned)ds.pressure, (int)ds.temperature,
-                 (int)ds.counter, (int)ds.rssi);
-        bleSendChunked(buf2);
+    // Защита от переполнения: оставляем последние 64 байта
+    if (acc_len >= sizeof(acc_buf) - 64) {
+        uint16_t keep = 64;
+        memmove(acc_buf, acc_buf + (acc_len - keep), keep);
+        acc_len = keep;
     }
 }
 
@@ -922,6 +941,15 @@ static bool loadConfig() {
         }
     }
 
+    // Валидация freq (кодировка: 0 = 315 МГц, 1 = 433 МГц).
+    // Битые/старые значения (раньше 315/433 писались в uint8_t и обрезались
+    // до 59/177) приводим к 315 МГц, иначе ползунки частоты в приложении
+    // не отражают выбор, а передача уходит на неверной частоте.
+    if (cfg.freq > 1) {
+        cfg.freq = DEFAULT_FREQ_315;
+        configDirty = true;
+    }
+
     if (cfg.license_key[0] || cfg.license_key[1] || cfg.license_key[2] || cfg.license_key[3]) {
         licenseValid = 2;
     } else if (trialStartTime > 0) {
@@ -949,7 +977,7 @@ static void sendStatus() {
         "\"tx_en\":%d,\"tx_int\":%u,\"tx_pkt\":%u,"
 "\"batt_mv\":%u,\"batt_pct\":%u,\"batt_raw\":%d,\"batt_pin\":%d,\"batt_cal\":%u,\"license\":%u,"
         "\"sniff\":%d,\"usb\":%d,",
-        cfg.freq, (unsigned long)cfg.datarate, (unsigned)cfg.deviation, (unsigned)cfg.power,
+        getFreqJson(), (unsigned long)cfg.datarate, (unsigned)cfg.deviation, (unsigned)cfg.power,
         cfg.tx_enabled, (unsigned)cfg.tx_interval, (unsigned)cfg.tx_packets,
         (unsigned)readBatteryMv(), (unsigned)getBatteryPercent(), readBatteryRaw(),
         (int)cfg.batt_pin,
@@ -1072,7 +1100,7 @@ static void processCommand(const char *cmd) {
     else if (strcmp(cmdName, "reset") == 0) {
         setDefaultConfig();
         configDirty = true;
-        radio.setFreq(cfg.freq == 433 ? 433000000UL : 315000000UL);
+        radio.setFreq(getFreqHz());
         sendLog("Config reset to defaults");
     }
     else if (strcmp(cmdName, "sensor") == 0) {
@@ -1125,8 +1153,8 @@ static void processCommand(const char *cmd) {
     else if (strcmp(cmdName, "settings") == 0) {
         int32_t freq = 0;
         if (jsonGetInt(cmd, "freq", &freq)) {
-            cfg.freq = (uint8_t)freq;
-            uint32_t freqHz = (freq == 433) ? 433000000UL : 315000000UL;
+            cfg.freq = (freq == 433) ? 1 : 0;
+            uint32_t freqHz = getFreqHz();
             radio.setFreq(freqHz);
         }
         int32_t drate = 0;
@@ -1204,6 +1232,60 @@ static void processCommand(const char *cmd) {
         char logBuf[64];
         snprintf(logBuf, sizeof(logBuf), "Applied %d discovered sensors", applied);
         sendLog(logBuf);
+    }
+    else if (strcmp(cmdName, "sniff_echo") == 0) {
+        // Self-echo: передаём один тестовый пакет на малой мощности и
+        // сразу слушаем собственный сигнал (проверка всей RF-цепочки).
+        if (snifferActive) sniffer_stop();
+        radio.setIdleState();
+        delay(2);
+        radio.setPA(1);  // минимальная мощность, чтобы не перегрузить приёмник
+
+        uint8_t packet[32];
+        uint8_t pktLen = build_pmv107j_packet(packet, 0x12345678, 2300, 22, 0, 0);
+        cc1101_send_raw(packet, pktLen);
+        delay(50);
+        radio.setIdleState();
+        delay(2);
+        radio.flushTxFifo();
+        delay(5);
+
+float freq = (cfg.freq == 1) ? 433.0f : 315.0f;
+        radio.setFreqConfig(freq);
+        radio.setFreq(freq);
+        radio.setRxConfig();
+        radio.setModulation(0);
+        radio.setSyncMode(0);
+        radio.setManc(0);
+        radio.setDRate(cfg.datarate);
+        radio.setDeviation((float)cfg.deviation / 10.0f);
+        radio.sendCommand(CC1101_SCAL);
+        delay(5);
+        radio.flushRxFifo();
+        radio.setRxState();
+        delay(700);
+
+        uint8_t rx = radio.getRxBytes() & 0x7F;
+        char lb[96];
+        if (rx > 0) {
+            if (rx > 64) rx = 64;
+            uint8_t buf[64];
+            radio.readBurstReg(CC1101_RXFIFO, buf, rx);
+            radio.flushRxFifo();
+            DiscoveredSensor ds;
+            if (sniffer_decode_packet(buf, rx, &ds)) {
+                snprintf(lb, sizeof(lb), "ECHO OK: id=%08X p=%u tmp=%d c=%d rssi=%d",
+                         (unsigned)ds.id, (unsigned)ds.pressure, (int)ds.temperature,
+                         (int)ds.counter, (int)ds.rssi);
+            } else {
+                snprintf(lb, sizeof(lb), "ECHO FAIL: %d bytes, no decode", (int)rx);
+            }
+        } else {
+            snprintf(lb, sizeof(lb), "ECHO FAIL: no data");
+        }
+        sendLog(lb);
+        radio.setPA(cfg.power);
+        radio.setRxState();
     }
     else if (strcmp(cmdName, "license") == 0) {
         char keyStr[16] = {0};
@@ -1332,11 +1414,10 @@ void setup() {
     Serial.flush();
     sendLog("CC1101 initialized OK");
     // Настраиваем частоту из конфига
-    uint32_t freqHz = (cfg.freq == 433) ? 433000000UL : 315000000UL;
-    radio.setFreq(freqHz);
+    radio.setFreq(getFreqHz());
     radio.setPA(cfg.power);
     // Частота и девиация из конфига (как было раньше — radio.init() дефолты)
-    radio.setFreq(freqHz);
+    radio.setFreq(getFreqHz());
     radio.setPA(cfg.power);
     radio.setDRate(cfg.datarate);
     radio.setDeviation((float)cfg.deviation / 10.0f);
@@ -1398,9 +1479,9 @@ void loop() {
     }
 
     // 4. Проверка батареи (только индикация, НЕ отключает авто-TX).
-    //    Ранее при "критичной" батарее авто-TX блокировался, но датчик батареи на A4
-    //    может читать ~0 мВ (делитель/пин не подключён), что отключало передачу. Убираем блокировку.
-    if (isBatteryCritical()) {
+    //    При питании от USB batt_mv = 0 (батарея не измеряется) — не считаем это
+    //    критичным, иначе спамится ложный warning каждые 30 с.
+    if (!isUsbPowered() && isBatteryCritical()) {
         static uint32_t lastBattWarn = 0;
         if (millis() - lastBattWarn > 30000) {
             lastBattWarn = millis();
