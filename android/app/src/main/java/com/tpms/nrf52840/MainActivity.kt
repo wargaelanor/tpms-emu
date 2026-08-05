@@ -329,6 +329,28 @@ class MainActivity : AppCompatActivity() {
         binding.btnReset.setOnClickListener { sendCommand("\"cmd\":\"battcal_reset\"") }
         binding.btnCalcBattLife.setOnClickListener { calcBatteryLife() }
         binding.etCapacity.setText(prefs.getInt("batt_capacity_mah", 850).toString())
+        attachPressFlash(
+            binding.btnBurst, binding.btnSaveAutoTx, binding.btnSniffToggle,
+            binding.btnSniffApply, binding.btnSaveFreq, binding.btnActivate,
+            binding.btnBattCal, binding.btnReset, binding.btnCalcBattLife,
+            binding.btnTabMain, binding.btnTabSettings
+        )
+    }
+
+    private fun attachPressFlash(vararg views: View) {
+        views.forEach { v ->
+            v.setOnTouchListener { vv, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        vv.animate().scaleX(0.94f).scaleY(0.94f).setDuration(90).start()
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        vv.animate().scaleX(1f).scaleY(1f).setDuration(130).start()
+                    }
+                }
+                false
+            }
+        }
     }
 
     private fun calcBatteryLife() {
@@ -880,7 +902,21 @@ class MainActivity : AppCompatActivity() {
         tv.append(s)
         tv.append("\n")
         val scroll = tv.parent as? ScrollView
-        scroll?.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        val outer = binding.scrollSettings
+        if (scroll != null && outer != null) {
+            outer.post {
+                val ptOut = IntArray(2)
+                val ptLog = IntArray(2)
+                outer.getLocationInWindow(ptOut)
+                tv.getLocationInWindow(ptLog)
+                val relY = ptLog[1] - ptOut[1]
+                if (relY >= 0 && relY < outer.height) {
+                    val range = (scroll.getChildAt(0)?.height ?: 0) - scroll.height
+                    val atBottom = range <= 0 || scroll.scrollY >= range - 32
+                    if (atBottom) scroll.fullScroll(View.FOCUS_DOWN)
+                }
+            }
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

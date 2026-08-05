@@ -591,8 +591,7 @@
                     android:textSize="11sp"
                     android:textColor="@color/accent_text"
                     android:lineSpacingExtra="3dp"
-                    android:fontFamily="monospace"
-                    android:textIsSelectable="true" />
+                    android:fontFamily="monospace" />
             </ScrollView>
         </LinearLayout>
 
