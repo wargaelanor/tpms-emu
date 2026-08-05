@@ -376,6 +376,16 @@
                     android:textStyle="bold"
                     android:textColor="@color/bg" />
             </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvSnifferStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="11sp"
+                android:textColor="@color/accent_text"
+                android:lineSpacingExtra="4dp"
+                android:fontFamily="monospace"
+                android:layout_marginTop="10dp" />
         </LinearLayout>
 
         <!-- БАТАРЕЯ -->

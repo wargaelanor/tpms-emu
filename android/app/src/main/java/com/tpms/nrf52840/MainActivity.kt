@@ -103,6 +103,10 @@ class MainActivity : AppCompatActivity() {
     private var lastSniffSummary: String? = null
     private var sniffRunning = false
 
+    private val snifferReport = mutableListOf<String>()
+    private val lastDiscValid = booleanArrayOf(false, false, false, false)
+    private var wasSniffActive = false
+
     private val prefs by lazy { getSharedPreferences("tpms_prefs", Context.MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -289,8 +293,19 @@ class MainActivity : AppCompatActivity() {
             binding.btnSniffToggle.text =
                 getString(if (sniffRunning) R.string.button_sniff_stop else R.string.button_sniff_start)
             sendCommand(if (sniffRunning) "\"cmd\":\"sniff_start\"" else "\"cmd\":\"sniff_stop\"")
+            if (sniffRunning) {
+                snifferReport.clear()
+                lastDiscValid.fill(false)
+                wasSniffActive = false
+            }
+            refreshSnifferStatus()
         }
-        binding.btnSniffApply.setOnClickListener { sendCommand("\"cmd\":\"sniff_apply\"") }
+        binding.btnSniffApply.setOnClickListener {
+            sendCommand("\"cmd\":\"sniff_apply\"")
+            val valid = lastDiscValid.count { it }
+            snifferReport.add(getString(R.string.sniff_applied, valid))
+            refreshSnifferStatus()
+        }
         binding.btnSaveFreq.setOnClickListener {
             val freq = if (binding.rb433.isChecked) 433 else 315
             sendCommand("\"cmd\":\"settings\",\"freq\":$freq")
@@ -791,6 +806,7 @@ class MainActivity : AppCompatActivity() {
                 getString(if (sniffRunning) R.string.button_sniff_stop else R.string.button_sniff_start)
         }
         val disc = data.optJSONArray("disc")
+        updateSnifferUi(sniffActive, disc)
         val sb = StringBuilder()
         sb.appendLine("Сниффер: ${if (sniffActive) "активен" else "выкл"}")
         disc?.let { a ->
@@ -806,6 +822,39 @@ class MainActivity : AppCompatActivity() {
             lastSniffSummary = summary
             log(summary)
         }
+    }
+
+    private fun updateSnifferUi(sniffActive: Boolean, disc: JSONArray?) {
+        disc?.let { a ->
+            for (i in 0 until a.length()) {
+                val obj = a.optJSONObject(i)
+                if (obj != null) {
+                    val id = obj.optString("id", "?")
+                    if (!lastDiscValid[i] && id != "?") {
+                        lastDiscValid[i] = true
+                        snifferReport.add(getString(R.string.sniff_found, i + 1, id))
+                    }
+                }
+            }
+        }
+        val allValid = lastDiscValid.all { it }
+        if (wasSniffActive && !sniffActive && allValid) {
+            snifferReport.add(getString(R.string.sniff_all_found))
+        }
+        wasSniffActive = sniffActive
+        refreshSnifferStatus()
+    }
+
+    private fun refreshSnifferStatus() {
+        val sb = StringBuilder(
+            getString(if (sniffRunning) R.string.sniffer_on else R.string.sniffer_off))
+        if (snifferReport.isNotEmpty()) {
+            sb.append("\n")
+            sb.append(snifferReport.joinToString("\n"))
+        }
+        binding.tvSnifferStatus.text = sb.toString()
+        binding.tvSnifferStatus.setTextColor(getColor(
+            if (sniffRunning) R.color.accent_text else R.color.text_muted))
     }
 
     private fun updateConnectionState() {

@@ -36,6 +36,11 @@
     <string name="license_inactive">Без лицензии</string>
     <string name="batt_hint">BLE-анонс (~1 мА) + CC1101 IDLE (~1.5 мА). Интервал передач почти не влияет.</string>
     <string name="sensor_enabled">Датчик включён</string>
+    <string name="sniffer_on">Сниффер: вкл</string>
+    <string name="sniffer_off">Сниффер: выкл</string>
+    <string name="sniff_found">Найден датчик №%1$d: ID=%2$s</string>
+    <string name="sniff_all_found">Все датчики найдены — применено</string>
+    <string name="sniff_applied">Применено: %1$d датчиков</string>
     <string name="unit_kpa">кПа</string>
     <string name="unit_c">°C</string>
     <string name="btn_select">Выбрать</string>
