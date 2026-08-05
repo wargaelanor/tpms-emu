@@ -15,17 +15,17 @@ class BatteryView @JvmOverloads constructor(
 
     private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = dp(3f)
-        color = 0xFFFFFFFF.toInt()
+        strokeWidth = dp(2.5f)
+        color = 0xFF4ADE80.toInt()
     }
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = 0xFF69F0AE.toInt()
+        color = 0xFF4ADE80.toInt()
     }
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFE0E0E0.toInt()
+        color = 0xFFE0F2E9.toInt()
         typeface = android.graphics.Typeface.DEFAULT_BOLD
         textAlign = Paint.Align.CENTER
     }
@@ -75,9 +75,9 @@ class BatteryView @JvmOverloads constructor(
         percent = pct
         fillPaint.color = when {
             pct < 0 -> 0x00000000
-            pct < 10 -> 0xFFFF5252.toInt()
-            pct < 30 -> 0xFFFFB74D.toInt()
-            else -> 0xFF69F0AE.toInt()
+            pct < 10 -> 0xFFFCA5A5.toInt()
+            pct < 30 -> 0xFFFBBD24.toInt()
+            else -> 0xFF4ADE80.toInt()
         }
         label = if (pct < 0) "USB" else "$pct"
         invalidate()

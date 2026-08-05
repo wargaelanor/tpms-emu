@@ -1,107 +1,94 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
+    android:id="@+id/sensorCard"
+    android:layout_width="115dp"
     android:layout_height="wrap_content"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:orientation="vertical"
-    android:padding="10dp"
-    android:layout_marginBottom="8dp"
-    android:background="#252540">
+    android:background="@drawable/bg_sensor"
+    android:paddingStart="12dp"
+    android:paddingTop="10dp"
+    android:paddingEnd="12dp"
+    android:paddingBottom="10dp"
+    android:clickable="true"
+    android:focusable="true">
 
-    <TextView
-        android:id="@+id/tvPosition"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Датчик 1"
-        android:textColor="#7C4DFF"
-        android:textSize="12sp"
-        android:textAllCaps="true"
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2dp"
+        android:background="@drawable/bg_accent_line"
         android:layout_marginBottom="6dp" />
 
-    <com.google.android.material.textfield.TextInputLayout
-        android:layout_width="match_parent"
+    <TextView
+        android:id="@+id/tvCardTitle"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="6dp"
-        android:textColorHint="#9E9E9E">
+        android:textStyle="bold"
+        android:textSize="9sp"
+        android:textColor="@color/text_secondary"
+        android:textAllCaps="true"
+        android:letterSpacing="0.06"
+        android:layout_marginBottom="3dp" />
 
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/etSensorId"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="@string/sensor_id"
-            android:maxLength="8"
-            android:textColor="#E0E0E0"
-            android:fontFamily="monospace"
-            android:textSize="14sp" />
-    </com.google.android.material.textfield.TextInputLayout>
+    <TextView
+        android:id="@+id/tvCardId"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="00000000"
+        android:fontFamily="monospace"
+        android:textSize="10sp"
+        android:textColor="@color/text_muted"
+        android:letterSpacing="0.05"
+        android:layout_marginBottom="6dp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginBottom="6dp">
+        android:orientation="horizontal">
 
-        <com.google.android.material.textfield.TextInputLayout
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_marginEnd="6dp"
-            android:textColorHint="#9E9E9E">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/etPressure"
-                android:layout_width="match_parent"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:layout_marginEnd="4dp">
+            <TextView
+                android:id="@+id/tvCardPressure"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:hint="@string/pressure"
-                android:inputType="number"
-                android:textColor="#E0E0E0"
-                android:textSize="14sp" />
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:textColorHint="#9E9E9E">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/etTemperature"
-                android:layout_width="match_parent"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"
+                android:text="--" />
+            <TextView
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:hint="@string/temperature"
-                android:inputType="numberSigned"
-                android:textColor="#E0E0E0"
-                android:textSize="14sp" />
-        </com.google.android.material.textfield.TextInputLayout>
-    </LinearLayout>
+                android:textSize="8sp"
+                android:textColor="@color/text_muted"
+                android:text="@string/unit_kpa" />
+        </LinearLayout>
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical">
-
-        <CheckBox
-            android:id="@+id/cbEnabled"
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="@string/enabled"
-            android:textColor="#E0E0E0" />
-
-        <Button
-            android:id="@+id/btnSaveSensor"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/save"
-            android:textSize="12sp" />
-
-        <Button
-            android:id="@+id/btnTxSensor"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="TX"
-            android:textSize="12sp"
-            android:layout_marginStart="6dp" />
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:layout_marginStart="4dp">
+            <TextView
+                android:id="@+id/tvCardTemp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"
+                android:text="--" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="8sp"
+                android:textColor="@color/text_muted"
+                android:text="@string/unit_c" />
+        </LinearLayout>
     </LinearLayout>
 </LinearLayout>

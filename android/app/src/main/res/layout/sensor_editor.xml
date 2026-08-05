@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/bg_editor"
+    android:padding="22dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="18dp">
+
+        <TextView
+            android:id="@+id/tvEditorTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textSize="17sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_primary"
+            android:text="Редактирование" />
+
+        <TextView
+            android:id="@+id/btnEditorClose"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="&#x2715;"
+            android:textSize="24sp"
+            android:textColor="@color/text_secondary"
+            android:padding="4dp"
+            android:clickable="true"
+            android:focusable="true" />
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/label_id"
+        android:textSize="11sp"
+        android:textColor="@color/text_secondary"
+        android:layout_marginBottom="4dp" />
+
+    <EditText
+        android:id="@+id/etEditorId"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:hint="00000000"
+        android:maxLength="8"
+        android:fontFamily="monospace"
+        android:textSize="14sp"
+        android:textColor="@color/text_primary"
+        android:textColorHint="@color/text_muted"
+        android:background="@drawable/bg_input"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:inputType="text"
+        android:gravity="center_vertical" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="12dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:layout_marginEnd="4dp">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/label_pressure"
+                android:textSize="11sp"
+                android:textColor="@color/text_secondary"
+                android:layout_marginBottom="4dp" />
+            <EditText
+                android:id="@+id/etEditorPressure"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:inputType="number"
+                android:textSize="14sp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_muted"
+                android:background="@drawable/bg_input"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:gravity="center_vertical" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:layout_marginStart="4dp">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/label_temperature"
+                android:textSize="11sp"
+                android:textColor="@color/text_secondary"
+                android:layout_marginBottom="4dp" />
+            <EditText
+                android:id="@+id/etEditorTemp"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:inputType="numberSigned"
+                android:textSize="14sp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_muted"
+                android:background="@drawable/bg_input"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:gravity="center_vertical" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <CheckBox
+        android:id="@+id/cbEditorEnabled"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/sensor_enabled"
+        android:textSize="14sp"
+        android:textColor="@color/accent_text"
+        android:buttonTint="@color/accent"
+        android:layout_marginTop="14dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="18dp">
+
+        <Button
+            android:id="@+id/btnEditorCancel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/btn_cancel"
+            android:text="@string/button_cancel"
+            android:textAllCaps="false"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_secondary"
+            android:minHeight="46dp" />
+
+        <Button
+            android:id="@+id/btnEditorSave"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/btn_primary"
+            android:text="@string/button_save"
+            android:textAllCaps="false"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:textColor="@color/bg"
+            android:minHeight="46dp" />
+    </LinearLayout>
+</LinearLayout>

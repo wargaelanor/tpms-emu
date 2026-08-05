@@ -4,606 +4,689 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#0A0A16">
+    android:background="@color/bg"
+    android:fitsSystemWindows="true"
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp">
 
-    <com.google.android.material.tabs.TabLayout
-        android:id="@+id/tabLayout"
+    <!-- ===== HEADER ===== -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#1A1A2E"
-        app:tabIndicatorColor="#69F0AE"
-        app:tabSelectedTextColor="#69F0AE"
-        app:tabTextColor="#9E9E9E"
-        app:tabGravity="fill">
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/bg_header"
+        android:padding="14dp"
+        android:layout_marginTop="10dp">
 
-        <com.google.android.material.tabs.TabItem
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Главная" />
+            android:layout_weight="1"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
 
-        <com.google.android.material.tabs.TabItem
-            android:layout_width="wrap_content"
+            <View
+                android:id="@+id/statusDot"
+                android:layout_width="8dp"
+                android:layout_height="8dp"
+                android:background="@drawable/bg_dot"
+                android:layout_marginEnd="8dp" />
+
+            <TextView
+                android:id="@+id/tvConnectionState"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/searching"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:textColor="@color/accent"
+                android:maxLines="1"
+                android:ellipsize="end" />
+        </LinearLayout>
+
+        <com.tpms.nrf52840.BatteryView
+            android:id="@+id/batteryIcon"
+            android:layout_width="46dp"
+            android:layout_height="20dp" />
+    </LinearLayout>
+
+    <!-- ===== TABS ===== -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="@drawable/bg_tab_bar"
+        android:padding="4dp"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="6dp">
+
+        <Button
+            android:id="@+id/btnTabMain"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Настройки" />
-    </com.google.android.material.tabs.TabLayout>
+            android:layout_weight="1"
+            android:background="@drawable/bg_tab_active"
+            android:text="@string/tab_main"
+            android:textAllCaps="false"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="@color/accent"
+            android:minHeight="42dp" />
 
+        <Button
+            android:id="@+id/btnTabSettings"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="@drawable/bg_tab"
+            android:text="@string/tab_settings"
+            android:textAllCaps="false"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_secondary"
+            android:minHeight="42dp" />
+    </LinearLayout>
+
+    <!-- ===== CONTENT ===== -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <!-- ===================== ГЛАВНАЯ ===================== -->
-        <androidx.core.widget.NestedScrollView
+        <!-- MAIN PAGE -->
+        <FrameLayout
             android:id="@+id/scrollMain"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:fillViewport="true"
-            android:padding="12dp">
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp">
 
-            <LinearLayout
-                android:layout_width="match_parent"
+            <ImageView
+                android:id="@+id/carImg"
+                android:layout_width="190dp"
+                android:layout_height="238dp"
+                android:layout_gravity="center"
+                android:src="@drawable/car_top"
+                android:contentDescription="Car top view"
+                android:scaleType="fitCenter" />
+
+            <include
+                android:id="@+id/sensorFl"
+                layout="@layout/item_sensor"
+                android:layout_width="115dp"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:paddingBottom="24dp">
+                android:layout_gravity="top|start"
+                android:layout_margin="6dp" />
 
-                <!-- Статус + батарея -->
-                <androidx.cardview.widget.CardView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
-                    app:cardBackgroundColor="#1A1A2E"
-                    app:cardCornerRadius="12dp">
+            <include
+                android:id="@+id/sensorFr"
+                layout="@layout/item_sensor"
+                android:layout_width="115dp"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_margin="6dp" />
 
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical"
-                        android:padding="14dp">
+            <include
+                android:id="@+id/sensorRl"
+                layout="@layout/item_sensor"
+                android:layout_width="115dp"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|start"
+                android:layout_margin="6dp" />
 
-                        <LinearLayout
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:orientation="vertical"
-                            android:layout_marginEnd="10dp">
+            <include
+                android:id="@+id/sensorRr"
+                layout="@layout/item_sensor"
+                android:layout_width="115dp"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|end"
+                android:layout_margin="6dp" />
+        </FrameLayout>
 
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="@string/status"
-                                android:textColor="#9E9E9E"
-                                android:textSize="12sp"
-                                android:textAllCaps="true"
-                                android:layout_marginBottom="4dp" />
-
-                            <TextView
-                                android:id="@+id/tvConnectionState"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="@string/device_not_connected"
-                                android:textColor="#FF5252"
-                                android:textSize="14sp" />
-                        </LinearLayout>
-
-                        <com.tpms.nrf52840.BatteryView
-                            android:id="@+id/batteryIcon"
-                            android:layout_width="88dp"
-                            android:layout_height="38dp" />
-                    </LinearLayout>
-                </androidx.cardview.widget.CardView>
-
-                <!-- Датчики -->
-                <androidx.cardview.widget.CardView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
-                    app:cardBackgroundColor="#1A1A2E"
-                    app:cardCornerRadius="12dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="14dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/sensors"
-                            android:textColor="#9E9E9E"
-                            android:textSize="12sp"
-                            android:textAllCaps="true"
-                            android:layout_marginBottom="10dp" />
-
-                        <LinearLayout
-                            android:id="@+id/sensorsContainer"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical" />
-                    </LinearLayout>
-                </androidx.cardview.widget.CardView>
-            </LinearLayout>
-        </androidx.core.widget.NestedScrollView>
-
-        <!-- ===================== НАСТРОЙКИ ===================== -->
+        <!-- SETTINGS PAGE -->
         <androidx.core.widget.NestedScrollView
             android:id="@+id/scrollSettings"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:fillViewport="true"
-            android:padding="12dp"
-            android:visibility="gone">
+            android:visibility="gone"
+            android:scrollbars="none"
+            android:clipToPadding="false"
+            android:paddingBottom="20dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:paddingBottom="24dp">
+                android:orientation="vertical">
 
-                <!-- Emulator -->
-                <androidx.cardview.widget.CardView
+        <!-- ЧАСТОТА -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_section"
+            android:padding="14dp"
+            android:layout_marginBottom="10dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/section_freq"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_secondary"
+                android:textAllCaps="true"
+                android:letterSpacing="0.1"
+                android:layout_marginBottom="10dp" />
+
+            <RadioGroup
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/rb315"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="315 МГц"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_primary"
+                    android:buttonTint="@color/accent" />
+
+                <RadioButton
+                    android:id="@+id/rb433"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="433 МГц"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_primary"
+                    android:buttonTint="@color/accent"
+                    android:layout_marginStart="24dp" />
+            </RadioGroup>
+
+            <Button
+                android:id="@+id/btnSaveFreq"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:background="@drawable/btn_primary"
+                android:text="@string/button_save"
+                android:textAllCaps="false"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:textColor="@color/bg"
+                android:layout_marginTop="4dp" />
+        </LinearLayout>
+
+        <!-- ЭМУЛЯТОР -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_section"
+            android:padding="14dp"
+            android:layout_marginBottom="10dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/section_emulator"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_secondary"
+                android:textAllCaps="true"
+                android:letterSpacing="0.1"
+                android:layout_marginBottom="10dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginEnd="6dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_interval"
+                        android:textSize="11sp"
+                        android:textColor="@color/text_secondary"
+                        android:layout_marginBottom="4dp" />
+                    <EditText
+                        android:id="@+id/etInterval"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:inputType="number"
+                        android:text="900"
+                        android:textSize="14sp"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_muted"
+                        android:background="@drawable/bg_input"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:gravity="center_vertical" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginEnd="6dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_packets"
+                        android:textSize="11sp"
+                        android:textColor="@color/text_secondary"
+                        android:layout_marginBottom="4dp" />
+                    <EditText
+                        android:id="@+id/etPackets"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:inputType="number"
+                        android:text="2"
+                        android:textSize="14sp"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_muted"
+                        android:background="@drawable/bg_input"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:gravity="center_vertical" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnBurst"
+                    android:layout_width="80dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/btn_primary"
+                    android:text="@string/button_burst"
+                    android:textAllCaps="false"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/bg" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnSaveAutoTx"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:background="@drawable/btn_primary"
+                android:text="@string/button_save"
+                android:textAllCaps="false"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:textColor="@color/bg"
+                android:layout_marginTop="10dp" />
+        </LinearLayout>
+
+        <!-- СНИФФЕР -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_section"
+            android:padding="14dp"
+            android:layout_marginBottom="10dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/section_sniffer"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_secondary"
+                android:textAllCaps="true"
+                android:letterSpacing="0.1"
+                android:layout_marginBottom="10dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnSniffToggle"
+                    android:layout_width="0dp"
+                    android:layout_height="46dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="5dp"
+                    android:background="@drawable/btn_secondary"
+                    android:text="@string/button_sniff_start"
+                    android:textAllCaps="false"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/accent_text" />
+
+                <Button
+                    android:id="@+id/btnSniffApply"
+                    android:layout_width="0dp"
+                    android:layout_height="46dp"
+                    android:layout_weight="1"
+                    android:layout_marginStart="5dp"
+                    android:background="@drawable/btn_primary"
+                    android:text="@string/button_apply"
+                    android:textAllCaps="false"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/bg" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- БАТАРЕЯ -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_section"
+            android:padding="14dp"
+            android:layout_marginBottom="10dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/section_battery"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_secondary"
+                android:textAllCaps="true"
+                android:letterSpacing="0.1"
+                android:layout_marginBottom="10dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginEnd="6dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_batt_pin"
+                        android:textSize="11sp"
+                        android:textColor="@color/text_secondary"
+                        android:layout_marginBottom="4dp" />
+                    <EditText
+                        android:id="@+id/etBattPin"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:inputType="number"
+                        android:text="255"
+                        android:textSize="14sp"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_muted"
+                        android:background="@drawable/bg_input"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:gravity="center_vertical" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnSaveBattPin"
+                    android:layout_width="86dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/btn_secondary"
+                    android:text="@string/button_pin"
+                    android:textAllCaps="false"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/accent_text" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="8dp">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginEnd="6dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_batt_cal"
+                        android:textSize="11sp"
+                        android:textColor="@color/text_secondary"
+                        android:layout_marginBottom="4dp" />
+                    <EditText
+                        android:id="@+id/etBattCalMv"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:inputType="number"
+                        android:hint="3750"
+                        android:textSize="14sp"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_muted"
+                        android:background="@drawable/bg_input"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:gravity="center_vertical" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnBattCal"
+                    android:layout_width="88dp"
+                    android:layout_height="44dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/btn_secondary"
+                    android:text="@string/button_calibrate"
+                    android:textAllCaps="false"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/accent_text" />
+
+                <Button
+                    android:id="@+id/btnReset"
+                    android:layout_width="74dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/btn_danger"
+                    android:text="@string/button_reset"
+                    android:textAllCaps="false"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/danger" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvBattDetails"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="11sp"
+                android:textColor="@color/text_muted"
+                android:lineSpacingExtra="3dp"
+                android:fontFamily="monospace"
+                android:layout_marginTop="10dp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#144ADE80"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="8dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginEnd="6dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_capacity"
+                        android:textSize="11sp"
+                        android:textColor="@color/text_secondary"
+                        android:layout_marginBottom="4dp" />
+                    <EditText
+                        android:id="@+id/etCapacity"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:inputType="number"
+                        android:text="850"
+                        android:textSize="14sp"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_muted"
+                        android:background="@drawable/bg_input"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:gravity="center_vertical" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnCalcBattLife"
+                    android:layout_width="110dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/btn_primary"
+                    android:text="@string/button_calc"
+                    android:textAllCaps="false"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/bg" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvBattLifeResult"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="11sp"
+                android:textColor="@color/accent_text"
+                android:lineSpacingExtra="3dp"
+                android:layout_marginTop="10dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/batt_hint"
+                android:textSize="11sp"
+                android:textColor="@color/text_muted"
+                android:lineSpacingExtra="2dp"
+                android:layout_marginTop="6dp" />
+        </LinearLayout>
+
+        <!-- ЛОГ -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_section"
+            android:padding="14dp"
+            android:layout_marginBottom="10dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/section_log"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_secondary"
+                android:textAllCaps="true"
+                android:letterSpacing="0.1"
+                android:layout_marginBottom="10dp" />
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="220dp"
+                android:scrollbars="vertical"
+                android:background="@drawable/bg_log"
+                android:padding="4dp">
+
+                <TextView
+                    android:id="@+id/tvLog"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
-                    app:cardBackgroundColor="#1A1A2E"
-                    app:cardCornerRadius="12dp">
+                    android:textSize="11sp"
+                    android:textColor="@color/accent_text"
+                    android:lineSpacingExtra="3dp"
+                    android:fontFamily="monospace"
+                    android:textIsSelectable="true" />
+            </ScrollView>
+        </LinearLayout>
 
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="14dp">
+        <!-- ЛИЦЕНЗИЯ -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_section"
+            android:padding="14dp">
 
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/emulator"
-                            android:textColor="#9E9E9E"
-                            android:textSize="12sp"
-                            android:textAllCaps="true"
-                            android:layout_marginBottom="10dp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/section_license"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_secondary"
+                android:textAllCaps="true"
+                android:letterSpacing="0.1"
+                android:layout_marginBottom="10dp" />
 
-                        <Button
-                            android:id="@+id/btnBurst"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="@string/burst"
-                            android:layout_marginBottom="10dp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/license_key"
+                android:textSize="11sp"
+                android:textColor="@color/text_secondary"
+                android:layout_marginBottom="4dp" />
 
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal">
+            <EditText
+                android:id="@+id/etLicense"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:hint="0000000000000000"
+                android:textSize="14sp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_muted"
+                android:background="@drawable/bg_input"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:gravity="center_vertical" />
 
-                            <com.google.android.material.textfield.TextInputLayout
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:layout_marginEnd="6dp"
-                                android:textColorHint="#9E9E9E">
+            <Button
+                android:id="@+id/btnActivate"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:background="@drawable/btn_primary"
+                android:text="@string/button_activate"
+                android:textAllCaps="false"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:textColor="@color/bg"
+                android:layout_marginTop="8dp" />
 
-                                <com.google.android.material.textfield.TextInputEditText
-                                    android:id="@+id/etInterval"
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:hint="@string/interval"
-                                    android:inputType="number"
-                                    android:text="300"
-                                    android:textColor="#E0E0E0" />
-                            </com.google.android.material.textfield.TextInputLayout>
+            <TextView
+                android:id="@+id/tvLicense"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/license_inactive"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:textColor="@color/warning"
+                android:layout_marginTop="6dp" />
+        </LinearLayout>
 
-                            <com.google.android.material.textfield.TextInputLayout
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:textColorHint="#9E9E9E">
-
-                                <com.google.android.material.textfield.TextInputEditText
-                                    android:id="@+id/etPackets"
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:hint="@string/packets"
-                                    android:inputType="number"
-                                    android:text="2"
-                                    android:textColor="#E0E0E0" />
-                            </com.google.android.material.textfield.TextInputLayout>
-                        </LinearLayout>
-
-                        <Button
-                            android:id="@+id/btnSaveAutoTx"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="@string/save"
-                            android:layout_marginTop="8dp" />
-                    </LinearLayout>
-                </androidx.cardview.widget.CardView>
-
-                <!-- Sniffer -->
-                <androidx.cardview.widget.CardView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
-                    app:cardBackgroundColor="#1A1A2E"
-                    app:cardCornerRadius="12dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="14dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/sniffer"
-                            android:textColor="#9E9E9E"
-                            android:textSize="12sp"
-                            android:textAllCaps="true"
-                            android:layout_marginBottom="10dp" />
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal">
-
-                            <Button
-                                android:id="@+id/btnSniffToggle"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="@string/start"
-                                android:layout_marginEnd="6dp" />
-
-                            <Button
-                                android:id="@+id/btnSniffApply"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="@string/apply" />
-                        </LinearLayout>
-
-                        <TextView
-                            android:id="@+id/tvSniffResults"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text=""
-                            android:textColor="#9E9E9E"
-                            android:textSize="12sp"
-                            android:fontFamily="monospace"
-                            android:layout_marginTop="8dp" />
-                    </LinearLayout>
-                </androidx.cardview.widget.CardView>
-
-                <!-- Frequency -->
-                <androidx.cardview.widget.CardView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
-                    app:cardBackgroundColor="#1A1A2E"
-                    app:cardCornerRadius="12dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="14dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/freq"
-                            android:textColor="#9E9E9E"
-                            android:textSize="12sp"
-                            android:textAllCaps="true"
-                            android:layout_marginBottom="10dp" />
-
-                        <RadioGroup
-                            android:id="@+id/rgFreq"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal">
-
-                            <RadioButton
-                                android:id="@+id/rb315"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="315 МГц"
-                                android:checked="true"
-                                android:textColor="#E0E0E0" />
-
-                            <RadioButton
-                                android:id="@+id/rb433"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="433 МГц"
-                                android:textColor="#E0E0E0" />
-                        </RadioGroup>
-
-                        <Button
-                            android:id="@+id/btnSaveFreq"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="@string/save"
-                            android:layout_marginTop="8dp" />
-                    </LinearLayout>
-                </androidx.cardview.widget.CardView>
-
-                <!-- Battery -->
-                <androidx.cardview.widget.CardView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
-                    app:cardBackgroundColor="#1A1A2E"
-                    app:cardCornerRadius="12dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="14dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/battery"
-                            android:textColor="#9E9E9E"
-                            android:textSize="12sp"
-                            android:textAllCaps="true"
-                            android:layout_marginBottom="10dp" />
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal"
-                            android:layout_marginBottom="8dp"
-                            android:gravity="center_vertical">
-
-                            <com.google.android.material.textfield.TextInputLayout
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:layout_marginEnd="6dp"
-                                android:textColorHint="#9E9E9E"
-                                android:hint="Источник: 255=VDDH или 14..21">
-
-                                <com.google.android.material.textfield.TextInputEditText
-                                    android:id="@+id/etBattPin"
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:inputType="number"
-                                    android:text="255"
-                                    android:textColor="#E0E0E0" />
-                            </com.google.android.material.textfield.TextInputLayout>
-
-                            <Button
-                                android:id="@+id/btnSaveBattPin"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Пин" />
-                        </LinearLayout>
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal"
-                            android:gravity="center_vertical">
-
-                            <com.google.android.material.textfield.TextInputLayout
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:layout_marginEnd="6dp"
-                                android:textColorHint="#9E9E9E"
-                                android:hint="Реальное напряжение (мВ)">
-
-                                <com.google.android.material.textfield.TextInputEditText
-                                    android:id="@+id/etBattCalMv"
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:inputType="number"
-                                    android:text="3540"
-                                    android:textColor="#E0E0E0" />
-                            </com.google.android.material.textfield.TextInputLayout>
-
-                            <Button
-                                android:id="@+id/btnBattCal"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Калибр." />
-
-                            <Button
-                                android:id="@+id/btnReset"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="6dp"
-                                android:text="Сброс"
-                                android:textColor="#E57373" />
-                        </LinearLayout>
-
-                        <TextView
-                            android:id="@+id/tvBattDetails"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text=""
-                            android:textColor="#9E9E9E"
-                            android:textSize="12sp"
-                            android:fontFamily="monospace"
-                            android:layout_marginTop="8dp" />
-                    </LinearLayout>
-                </androidx.cardview.widget.CardView>
-
-                <!-- Расчёт ресурса АКБ -->
-                <androidx.cardview.widget.CardView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
-                    app:cardBackgroundColor="#1A1A2E"
-                    app:cardCornerRadius="12dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="14dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="Расчёт ресурса АКБ (примерно)"
-                            android:textColor="#9E9E9E"
-                            android:textSize="12sp"
-                            android:textAllCaps="true"
-                            android:layout_marginBottom="10dp" />
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal"
-                            android:gravity="center_vertical">
-
-                            <com.google.android.material.textfield.TextInputLayout
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:layout_marginEnd="6dp"
-                                android:textColorHint="#9E9E9E"
-                                android:hint="Ёмкость, мАч">
-
-                                <com.google.android.material.textfield.TextInputEditText
-                                    android:id="@+id/etCapacity"
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:inputType="number"
-                                    android:text="500"
-                                    android:textColor="#E0E0E0" />
-                            </com.google.android.material.textfield.TextInputLayout>
-
-                            <Button
-                                android:id="@+id/btnCalcBattLife"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Рассчитать" />
-                        </LinearLayout>
-
-                        <TextView
-                            android:id="@+id/tvBattLifeResult"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text=""
-                            android:textColor="#69F0AE"
-                            android:textSize="13sp"
-                            android:fontFamily="monospace"
-                            android:layout_marginTop="8dp" />
-
-                        <TextView
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="Базу держат BLE-анонс (~1 мА) и CC1101 в IDLE (~1.5 мА) — поэтому интервал передач почти не влияет на ресурс."
-                            android:textColor="#9E9E9E"
-                            android:textSize="11sp"
-                            android:layout_marginTop="4dp" />
-                    </LinearLayout>
-                </androidx.cardview.widget.CardView>
-
-                <!-- License -->
-                <androidx.cardview.widget.CardView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
-                    app:cardBackgroundColor="#1A1A2E"
-                    app:cardCornerRadius="12dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="14dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/license"
-                            android:textColor="#9E9E9E"
-                            android:textSize="12sp"
-                            android:textAllCaps="true"
-                            android:layout_marginBottom="10dp" />
-
-                        <com.google.android.material.textfield.TextInputLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:textColorHint="#9E9E9E">
-
-                            <com.google.android.material.textfield.TextInputEditText
-                                android:id="@+id/etLicense"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:hint="@string/license_key"
-                                android:maxLength="8"
-                                android:textColor="#E0E0E0" />
-                        </com.google.android.material.textfield.TextInputLayout>
-
-                        <Button
-                            android:id="@+id/btnActivate"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="@string/activate"
-                            android:layout_marginTop="8dp" />
-
-                        <TextView
-                            android:id="@+id/tvLicense"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="Пробный период"
-                            android:textColor="#FFD740"
-                            android:textSize="12sp"
-                            android:layout_marginTop="4dp" />
-                    </LinearLayout>
-                </androidx.cardview.widget.CardView>
-
-                <!-- Log -->
-                <androidx.cardview.widget.CardView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    app:cardBackgroundColor="#1A1A2E"
-                    app:cardCornerRadius="12dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="14dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/log"
-                            android:textColor="#9E9E9E"
-                            android:textSize="12sp"
-                            android:textAllCaps="true"
-                            android:layout_marginBottom="10dp" />
-
-                        <ScrollView
-                            android:layout_width="match_parent"
-                            android:layout_height="250dp"
-                            android:background="#0A0A16"
-                            android:padding="8dp"
-                            android:nestedScrollingEnabled="true">
-
-                            <TextView
-                                android:id="@+id/tvLog"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text=""
-                                android:textColor="#9E9E9E"
-                                android:textSize="11sp"
-                                android:fontFamily="monospace"
-                                android:lineSpacingMultiplier="1.2" />
-                        </ScrollView>
-                    </LinearLayout>
-                </androidx.cardview.widget.CardView>
             </LinearLayout>
         </androidx.core.widget.NestedScrollView>
     </FrameLayout>

@@ -1,17 +1,30 @@
 package com.tpms.nrf52840
 
 import android.Manifest
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
+import android.app.Dialog
 import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.util.Log
+import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
+import android.view.Window
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -36,6 +49,7 @@ class MainActivity : AppCompatActivity() {
         const val TAG = "TPMS"
         const val REQUEST_PERMISSIONS = 1001
         const val STATUS_POLL_INTERVAL_MS = 4000L
+        const val LONG_PRESS_MS = 2000L
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -60,6 +74,22 @@ class MainActivity : AppCompatActivity() {
     private val rxBuffer = StringBuilder()
 
     private val sensorViews = mutableListOf<SensorViewHolder>()
+    private val sensorEnabled = booleanArrayOf(true, true, true, true)
+    private val sensorNames = listOf(
+        "Левое переднее", "Правое переднее", "Левое заднее", "Правое заднее"
+    )
+
+    private val sensorCardViews by lazy {
+        listOf(
+            binding.sensorFl.root, binding.sensorFr.root,
+            binding.sensorRl.root, binding.sensorRr.root
+        )
+    }
+
+    private var holdRunnable: Runnable? = null
+    private var holdHandled = false
+    private var editorDialog: Dialog? = null
+    private var editorIndex = -1
 
     private val statusPollRunnable = object : Runnable {
         override fun run() {
@@ -87,22 +117,38 @@ class MainActivity : AppCompatActivity() {
         initSensorsUi()
         initButtons()
         initTabs()
+        startDotPulse()
         checkPermissions()
         tryAutoConnect()
         handler.postDelayed(statusPollRunnable, STATUS_POLL_INTERVAL_MS)
     }
 
-    private fun initTabs() {
-        binding.tabLayout.addOnTabSelectedListener(object : com.google.android.material.tabs.TabLayout.OnTabSelectedListener {
-            override fun onTabSelected(tab: com.google.android.material.tabs.TabLayout.Tab) {
-                val settings = tab.position == 1
-                binding.scrollMain.visibility = if (settings) View.GONE else View.VISIBLE
-                binding.scrollSettings.visibility = if (settings) View.VISIBLE else View.GONE
-            }
+    private fun startDotPulse() {
+        val anim = ObjectAnimator.ofFloat(binding.statusDot, View.ALPHA, 1f, 0.35f)
+        anim.duration = 1250
+        anim.repeatMode = ValueAnimator.REVERSE
+        anim.repeatCount = ValueAnimator.INFINITE
+        anim.start()
+    }
 
-            override fun onTabUnselected(tab: com.google.android.material.tabs.TabLayout.Tab) {}
-            override fun onTabReselected(tab: com.google.android.material.tabs.TabLayout.Tab) {}
-        })
+    private fun initTabs() {
+        binding.btnTabMain.setOnClickListener { selectTab(0) }
+        binding.btnTabSettings.setOnClickListener { selectTab(1) }
+        selectTab(0)
+    }
+
+    private fun selectTab(pos: Int) {
+        val main = pos == 0
+        binding.scrollMain.visibility = if (main) View.VISIBLE else View.GONE
+        binding.scrollSettings.visibility = if (main) View.GONE else View.VISIBLE
+        if (!main) binding.scrollSettings.scrollTo(0, 0)
+
+        binding.btnTabMain.background = ContextCompat.getDrawable(this,
+            if (main) R.drawable.bg_tab_active else R.drawable.bg_tab)
+        binding.btnTabSettings.background = ContextCompat.getDrawable(this,
+            if (main) R.drawable.bg_tab else R.drawable.bg_tab_active)
+        binding.btnTabMain.setTextColor(getColor(if (main) R.color.accent else R.color.text_secondary))
+        binding.btnTabSettings.setTextColor(getColor(if (main) R.color.text_secondary else R.color.accent))
     }
 
     private fun tryAutoConnect() {
@@ -127,19 +173,96 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initSensorsUi() {
-        val positions = listOf("Левое Переднее", "Правое Переднее", "Левое Заднее", "Правое Заднее")
-        val container = binding.sensorsContainer
-        container.removeAllViews()
         sensorViews.clear()
         for (i in 0 until 4) {
-            val v = LayoutInflater.from(this).inflate(R.layout.item_sensor, container, false)
-            val holder = SensorViewHolder(v, i)
-            holder.tvPosition.text = positions[i]
-            holder.btnSave.setOnClickListener { sendSensor(i) }
-            holder.btnTx.setOnClickListener { sendCommand("\"cmd\":\"tx${i + 1}\"") }
-            container.addView(v)
+            val holder = SensorViewHolder(sensorCardViews[i], i)
+            holder.tvTitle.text = sensorNames[i].uppercase()
+            attachSensorInteractions(holder)
             sensorViews.add(holder)
         }
+    }
+
+    private fun attachSensorInteractions(holder: SensorViewHolder) {
+        holder.root.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    holdHandled = false
+                    holdRunnable?.let { v.removeCallbacks(it) }
+                    val r = Runnable {
+                        holdHandled = true
+                        v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        openSensorEditor(holder.index)
+                    }
+                    holdRunnable = r
+                    v.postDelayed(r, LONG_PRESS_MS)
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    holdRunnable?.let { v.removeCallbacks(it) }
+                    holdRunnable = null
+                }
+                MotionEvent.ACTION_UP -> {
+                    holdRunnable?.let { v.removeCallbacks(it) }
+                    holdRunnable = null
+                    v.performClick()
+                    if (!holdHandled) {
+                        // Короткий тап = имитация передачи (аналог TX)
+                        sendCommand("\"cmd\":\"tx${holder.index + 1}\"")
+                    }
+                }
+            }
+            true
+        }
+    }
+
+    private fun openSensorEditor(idx: Int) {
+        val h = sensorViews[idx]
+        editorIndex = idx
+        val v = LayoutInflater.from(this).inflate(R.layout.sensor_editor, null)
+        val tvTitle = v.findViewById<TextView>(R.id.tvEditorTitle)
+        val etId = v.findViewById<EditText>(R.id.etEditorId)
+        val etPr = v.findViewById<EditText>(R.id.etEditorPressure)
+        val etTmp = v.findViewById<EditText>(R.id.etEditorTemp)
+        val cbEn = v.findViewById<CheckBox>(R.id.cbEditorEnabled)
+
+        tvTitle.text = sensorNames[idx]
+        etId.setText(h.tvId.text)
+        etPr.setText(if (h.tvPressure.text == "--") "" else h.tvPressure.text)
+        etTmp.setText(if (h.tvTemp.text == "--") "" else h.tvTemp.text)
+        cbEn.isChecked = sensorEnabled[idx]
+
+        v.findViewById<View>(R.id.btnEditorClose).setOnClickListener { dismissEditor() }
+        v.findViewById<View>(R.id.btnEditorCancel).setOnClickListener { dismissEditor() }
+        v.findViewById<View>(R.id.btnEditorSave).setOnClickListener {
+            val id = etId.text.toString().trim()
+            val pressure = etPr.text.toString().toIntOrNull() ?: 230
+            val temp = etTmp.text.toString().toIntOrNull() ?: 20
+            val enabled = cbEn.isChecked
+            h.tvId.text = id
+            h.tvPressure.text = pressure.toString()
+            h.tvTemp.text = temp.toString()
+            sendCommand("\"cmd\":\"sensor\",\"sensor\":$idx,\"id\":\"$id\",\"pressure\":$pressure,\"temp\":$temp,\"enabled\":$enabled")
+            dismissEditor()
+        }
+
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dialog.setContentView(v)
+        dialog.window?.apply {
+            setGravity(Gravity.BOTTOM)
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setWindowAnimations(R.style.DialogBottomAnim)
+        }
+        dialog.setCanceledOnTouchOutside(true)
+        dialog.setOnDismissListener { editorIndex = -1 }
+        dialog.show()
+        editorDialog = dialog
+    }
+
+    private fun dismissEditor() {
+        editorDialog?.dismiss()
+        editorDialog = null
+        editorIndex = -1
     }
 
     private fun initButtons() {
@@ -151,7 +274,8 @@ class MainActivity : AppCompatActivity() {
         }
         binding.btnSniffToggle.setOnClickListener {
             sniffRunning = !sniffRunning
-            binding.btnSniffToggle.text = if (sniffRunning) "Стоп" else "Старт"
+            binding.btnSniffToggle.text =
+                getString(if (sniffRunning) R.string.button_sniff_stop else R.string.button_sniff_start)
             sendCommand(if (sniffRunning) "\"cmd\":\"sniff_start\"" else "\"cmd\":\"sniff_stop\"")
         }
         binding.btnSniffApply.setOnClickListener { sendCommand("\"cmd\":\"sniff_apply\"") }
@@ -164,7 +288,7 @@ class MainActivity : AppCompatActivity() {
             if (key.length == 8) {
                 sendCommand("\"cmd\":\"license\",\"key\":\"$key\"")
             } else {
-                log("Ключ должен быть 8 hex символов")
+                log(getString(R.string.cmd_key_length))
             }
         }
         binding.btnSaveBattPin.setOnClickListener {
@@ -172,7 +296,7 @@ class MainActivity : AppCompatActivity() {
             if (pin != null && (pin == 255 || pin in 14..21)) {
                 sendCommand("\"cmd\":\"battpin\",\"pin\":$pin")
             } else {
-                log("Пин батареи: 255=VDDH (внутренний) или 14..21 (A0..A7)")
+                log(getString(R.string.cmd_pin_invalid))
             }
         }
         binding.btnBattCal.setOnClickListener {
@@ -180,12 +304,12 @@ class MainActivity : AppCompatActivity() {
             if (mv != null && mv > 0) {
                 sendCommand("\"cmd\":\"battcal\",\"mv\":$mv")
             } else {
-                log("Введи реальное напряжение в мВ (например 3540)")
+                log(getString(R.string.cmd_cal_invalid))
             }
         }
-        binding.btnReset.setOnClickListener { sendCommand("\"cmd\":\"reset\"") }
+        binding.btnReset.setOnClickListener { sendCommand("\"cmd\":\"battcal_reset\"") }
         binding.btnCalcBattLife.setOnClickListener { calcBatteryLife() }
-        binding.etCapacity.setText(prefs.getInt("batt_capacity_mah", 500).toString())
+        binding.etCapacity.setText(prefs.getInt("batt_capacity_mah", 850).toString())
     }
 
     private fun calcBatteryLife() {
@@ -193,18 +317,13 @@ class MainActivity : AppCompatActivity() {
         val interval = binding.etInterval.text.toString().toIntOrNull() ?: 0
         val packets = binding.etPackets.text.toString().toIntOrNull() ?: 0
         if (capacity <= 0 || interval <= 0 || packets < 1) {
-            binding.tvBattLifeResult.text = "Укажи ёмкость, интервал и пакеты"
-            binding.tvBattLifeResult.setTextColor(getColor(android.R.color.holo_red_light))
+            binding.tvBattLifeResult.text = getString(R.string.batt_life_hint_res)
+            binding.tvBattLifeResult.setTextColor(getColor(R.color.danger))
             return
         }
         prefs.edit().putInt("batt_capacity_mah", capacity).apply()
 
-        // Модель среднего тока.
-        // База (постоянно): BLE-анонс ~1.0 мА + CC1101 в IDLE ~1.5 мА.
         val baseMa = 2.5
-        // Передачи: за burst идут 4 датчика x packets пакетов. Пакет ~60 мс активной
-        // работы при ~30 мА (включая delay(30) между датчиками), пауза 100 мс между
-        // пакетами при ~15 мА. Всё это усредняется на интервал.
         val burstMas = 4.0 * packets * (30.0 * 0.06) + (packets - 1) * (15.0 * 0.1)
         val txMa = burstMas / interval
         val avgMa = baseMa + txMa
@@ -224,16 +343,7 @@ class MainActivity : AppCompatActivity() {
             else "~%.0f мин".format(hours * 60)
         )
         binding.tvBattLifeResult.text = res.toString()
-        binding.tvBattLifeResult.setTextColor(getColor(android.R.color.holo_green_light))
-    }
-
-    private fun sendSensor(idx: Int) {
-        val h = sensorViews[idx]
-        val id = h.etId.text.toString().trim()
-        val pressure = h.etPressure.text.toString().toIntOrNull() ?: 230
-        val temp = h.etTemperature.text.toString().toIntOrNull() ?: 20
-        val enabled = h.cbEnabled.isChecked
-        sendCommand("\"cmd\":\"sensor\",\"sensor\":$idx,\"id\":\"$id\",\"pressure\":$pressure,\"temp\":$temp,\"enabled\":$enabled")
+        binding.tvBattLifeResult.setTextColor(getColor(R.color.accent))
     }
 
     private fun checkPermissions() {
@@ -263,8 +373,8 @@ class MainActivity : AppCompatActivity() {
         }
         foundDevices.clear()
         selectedDevice = null
-        binding.tvConnectionState.text = "Сканирование..."
-        binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_blue_light))
+        binding.tvConnectionState.text = getString(R.string.scanning)
+        binding.tvConnectionState.setTextColor(getColor(R.color.accent_text))
 
         scanCallback?.let { scanner?.stopScan(it) }
         scanCallback = object : ScanCallback() {
@@ -283,6 +393,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     log("Scan failed: $errorCode")
                     binding.tvConnectionState.text = "Ошибка сканирования: $errorCode"
+                    binding.tvConnectionState.setTextColor(getColor(R.color.danger))
                 }
             }
         }
@@ -311,7 +422,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showDevicePicker() {
-        // Add bonded devices as fallback if scan found nothing
         if (foundDevices.isEmpty()) {
             val bonded = bluetoothAdapter?.bondedDevices ?: emptySet()
             bonded.filter {
@@ -321,19 +431,19 @@ class MainActivity : AppCompatActivity() {
         }
         val items = foundDevices.map { "${it.name ?: "Unknown"} (${it.address})" }.toTypedArray()
         if (items.isEmpty()) {
-            binding.tvConnectionState.text = "Устройства не найдены"
-            binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_red_light))
+            binding.tvConnectionState.text = getString(R.string.no_devices)
+            binding.tvConnectionState.setTextColor(getColor(R.color.danger))
             return
         }
         AlertDialog.Builder(this)
-            .setTitle("Выберите устройство")
+            .setTitle(getString(R.string.btn_select))
             .setItems(items) { _, which ->
                 selectedDevice = foundDevices[which]
                 binding.tvConnectionState.text = "Выбрано: ${foundDevices[which].name}"
-                binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_blue_light))
+                binding.tvConnectionState.setTextColor(getColor(R.color.accent_text))
                 connect(foundDevices[which])
             }
-            .setNegativeButton("Отмена", null)
+            .setNegativeButton(getString(R.string.button_cancel), null)
             .show()
     }
 
@@ -345,8 +455,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
         disconnect()
-        binding.tvConnectionState.text = "Подключение..."
-        binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_blue_light))
+        binding.tvConnectionState.text = getString(R.string.connecting)
+        binding.tvConnectionState.setTextColor(getColor(R.color.accent_text))
         bluetoothGatt = device.connectGatt(this, false, gattCallback)
     }
 
@@ -370,7 +480,8 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "onConnectionStateChange status=$status newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 runOnUiThread {
-                    binding.tvConnectionState.text = "Подключено, поиск сервисов..."
+                    binding.tvConnectionState.text = getString(R.string.connecting_services)
+                    binding.tvConnectionState.setTextColor(getColor(R.color.accent_text))
                     log("BLE подключен")
                 }
                 handler.postDelayed({
@@ -517,7 +628,6 @@ class MainActivity : AppCompatActivity() {
         isNusReady = true
         runOnUiThread { log("NUS готов к передаче") }
         sendCommand("\"cmd\":\"status\"")
-        // drain pending messages if any
         while (pendingMessages.isNotEmpty()) {
             sendCommand(pendingMessages.removeAt(0).removeSurrounding("{", "}"))
         }
@@ -630,10 +740,10 @@ class MainActivity : AppCompatActivity() {
             for (i in 0 until minOf(it.length(), sensorViews.size)) {
                 val s = it.getJSONObject(i)
                 val h = sensorViews[i]
-                if (!h.etId.hasFocus()) h.etId.setText(s.optString("id", "00000000"))
-                if (!h.etPressure.hasFocus()) h.etPressure.setText(s.optInt("p", 2300).toString())
-                if (!h.etTemperature.hasFocus()) h.etTemperature.setText(s.optInt("t", 20).toString())
-                h.cbEnabled.isChecked = s.optInt("en", 0) == 1
+                h.tvId.text = s.optString("id", "00000000")
+                h.tvPressure.text = s.optInt("p", 0).toString()
+                h.tvTemp.text = s.optInt("t", 0).toString()
+                sensorEnabled[i] = s.optInt("en", 1) == 1
             }
         }
 
@@ -646,11 +756,9 @@ class MainActivity : AppCompatActivity() {
         if (!binding.etPackets.hasFocus()) binding.etPackets.setText(data.optInt("tx_pkt", 2).toString())
 
         val licensed = data.optInt("license", 0) == 1
-        binding.tvLicense.text = if (licensed) "Лицензия активирована" else "Без лицензии"
-        binding.tvLicense.setTextColor(
-            if (licensed) getColor(android.R.color.holo_green_light)
-            else getColor(android.R.color.holo_orange_light)
-        )
+        binding.tvLicense.text = getString(
+            if (licensed) R.string.license_active else R.string.license_inactive)
+        binding.tvLicense.setTextColor(getColor(if (licensed) R.color.accent else R.color.warning))
 
         val mv = data.optInt("batt_mv", 0)
         val pct = data.optInt("batt_pct", 0)
@@ -675,11 +783,10 @@ class MainActivity : AppCompatActivity() {
         else if (pin <= 0 && !binding.etBattPin.hasFocus()) binding.etBattPin.setText("255")
 
         val sniffActive = data.optInt("sniff", 0) == 1
-        // Синхронизируем кнопку с реальным состоянием (сниффер может остановиться сам,
-        // когда найдены все датчики — тогда кнопка снова должна стать «Старт»)
         if (sniffRunning != sniffActive) {
             sniffRunning = sniffActive
-            binding.btnSniffToggle.text = if (sniffRunning) "Стоп" else "Старт"
+            binding.btnSniffToggle.text =
+                getString(if (sniffRunning) R.string.button_sniff_stop else R.string.button_sniff_start)
         }
         val disc = data.optJSONArray("disc")
         val sb = StringBuilder()
@@ -701,19 +808,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateConnectionState() {
         if (isConnected) {
-            binding.tvConnectionState.text = "Подключено: ${selectedDevice?.name ?: selectedDevice?.address}"
-            binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_green_light))
+            binding.tvConnectionState.text = getString(R.string.connected,
+                selectedDevice?.name ?: selectedDevice?.address ?: "?")
+            binding.tvConnectionState.setTextColor(getColor(R.color.accent))
         } else {
-            binding.tvConnectionState.text = "Поиск устройства..."
-            binding.tvConnectionState.setTextColor(getColor(android.R.color.holo_orange_light))
+            binding.tvConnectionState.text = getString(R.string.searching)
+            binding.tvConnectionState.setTextColor(getColor(R.color.warning))
         }
     }
 
     private fun log(msg: String) {
-        val text = binding.tvLog
-        text.append("$msg\n")
-        val scrollView = text.parent as? android.widget.ScrollView ?: return
-        scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
+        val tv = binding.tvLog
+        val color = when {
+            msg.startsWith("→") -> getColor(R.color.warning)
+            msg.startsWith("DISC:") || msg.startsWith("TX PKT") -> getColor(R.color.accent)
+            else -> getColor(R.color.accent_text)
+        }
+        val s = SpannableString(msg)
+        s.setSpan(ForegroundColorSpan(color), 0, s.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        tv.append(s)
+        tv.append("\n")
+        val scroll = tv.parent as? ScrollView
+        scroll?.post { scroll.fullScroll(View.FOCUS_DOWN) }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -733,12 +849,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     class SensorViewHolder(view: View, val index: Int) {
-        val tvPosition: TextView = view.findViewById(R.id.tvPosition)
-        val etId: EditText = view.findViewById(R.id.etSensorId)
-        val etPressure: EditText = view.findViewById(R.id.etPressure)
-        val etTemperature: EditText = view.findViewById(R.id.etTemperature)
-        val cbEnabled: CheckBox = view.findViewById(R.id.cbEnabled)
-        val btnSave: Button = view.findViewById(R.id.btnSaveSensor)
-        val btnTx: Button = view.findViewById(R.id.btnTxSensor)
+        val root: View = view
+        val tvTitle: TextView = view.findViewById(R.id.tvCardTitle)
+        val tvId: TextView = view.findViewById(R.id.tvCardId)
+        val tvPressure: TextView = view.findViewById(R.id.tvCardPressure)
+        val tvTemp: TextView = view.findViewById(R.id.tvCardTemp)
     }
 }
