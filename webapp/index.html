@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <title>TPMS NRF52840</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app-container">
+  <!-- Header -->
+  <div class="header">
+    <h1><span>TPMS</span> NRF52840</h1>
+  </div>
+
+  <!-- Connection bar -->
+  <div class="status-bar">
+    <div class="dot" id="conn-dot"></div>
+    <span id="conn-text">Не подключено</span>
+    <button id="btn-scan">Поиск</button>
+  </div>
+
+  <!-- iOS warning -->
+  <div id="ios-warning" class="ios-warning">
+    <strong>Внимание: iOS не поддерживает Web Bluetooth</strong>
+    Safari/Apple не реализовала Web Bluetooth API. Это приложение работает только в Chrome/Edge на Android и десктопе. Для iPhone нужно нативное приложение.
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="main">Управление</button>
+    <button class="tab" data-tab="settings">Настройки</button>
+  </div>
+
+  <!-- Page: Main -->
+  <div class="page active" id="page-main">
+    <div class="section-title">Датчики</div>
+    <div class="sensors-grid">
+      <div class="sensor-card" id="sensor-0">
+        <div class="s-title">Левое переднее</div>
+        <div class="s-id">00000000</div>
+        <div class="s-values">
+          <div class="s-val s-pressure"><small>Давление</small><span>--</span></div>
+          <div class="s-val s-temp"><small>Темп.</small><span>--</span></div>
+        </div>
+      </div>
+      <div class="sensor-card" id="sensor-1">
+        <div class="s-title">Правое переднее</div>
+        <div class="s-id">00000000</div>
+        <div class="s-values">
+          <div class="s-val s-pressure"><small>Давление</small><span>--</span></div>
+          <div class="s-val s-temp"><small>Темп.</small><span>--</span></div>
+        </div>
+      </div>
+      <div class="sensor-card" id="sensor-2">
+        <div class="s-title">Левое заднее</div>
+        <div class="s-id">00000000</div>
+        <div class="s-values">
+          <div class="s-val s-pressure"><small>Давление</small><span>--</span></div>
+          <div class="s-val s-temp"><small>Темп.</small><span>--</span></div>
+        </div>
+      </div>
+      <div class="sensor-card" id="sensor-3">
+        <div class="s-title">Правое заднее</div>
+        <div class="s-id">00000000</div>
+        <div class="s-values">
+          <div class="s-val s-pressure"><small>Давление</small><span>--</span></div>
+          <div class="s-val s-temp"><small>Темп.</small><span>--</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">Передача</div>
+    <button class="btn btn-primary" id="btn-burst">Burst (все 4 датчика)</button>
+
+    <div style="height:16px"></div>
+
+    <div class="section-title">Авто-передача</div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Интервал (сек)</label>
+        <input type="number" id="input-interval" value="60" min="1">
+      </div>
+      <div class="form-group">
+        <label>Пакетов</label>
+        <input type="number" id="input-packets" value="2" min="1" max="20">
+      </div>
+    </div>
+    <button class="btn btn-green" id="btn-save-autotx">Сохранить авто-передачу</button>
+
+    <div style="height:16px"></div>
+
+    <div class="section-title">Сниффер</div>
+    <div class="sniff-status" id="sniff-status">Сниффер: выкл</div>
+    <div class="btn-row">
+      <button class="btn btn-green" id="btn-sniff-toggle">Старт сниффера</button>
+      <button class="btn btn-outline" id="btn-sniff-apply">Применить</button>
+    </div>
+  </div>
+
+  <!-- Page: Settings -->
+  <div class="page" id="page-settings">
+    <div class="section-title">Батарея</div>
+    <div class="battery-block">
+      <div class="battery-header">
+        <div class="battery-icon">
+          <div class="battery-fill" style="width:0%"></div>
+        </div>
+        <span class="battery-pct">--</span>
+      </div>
+      <div class="battery-details">Нет данных</div>
+    </div>
+
+    <div class="section-title">Калибровка АКБ</div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Реальное напряжение (мВ)</label>
+        <input type="number" id="input-batt-cal" placeholder="напр. 4100">
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:8px">
+        <button class="btn btn-primary" id="btn-batt-cal" style="width:auto;padding:10px 16px">Калибр.</button>
+        <button class="btn btn-red" id="btn-reset-cal" style="width:auto;padding:10px 16px">Сброс</button>
+      </div>
+    </div>
+
+    <div class="section-title">Калькулятор ресурса АКБ</div>
+    <div class="form-group">
+      <label>Емкость АКБ (мАч)</label>
+      <input type="number" id="input-capacity" value="850" min="100">
+    </div>
+    <button class="btn btn-outline" id="btn-calc-batt">Рассчитать</button>
+    <div class="calc-result" id="calc-result">Заполните емкость АКБ, интервал и кол-во пакетов</div>
+
+    <div style="height:16px"></div>
+
+    <div class="section-title">Частота радиомодуля</div>
+    <div class="radio-group">
+      <div class="radio-btn freq-btn" data-freq="315">315 МГц</div>
+      <div class="radio-btn freq-btn active" data-freq="433">433 МГц</div>
+    </div>
+    <button class="btn btn-primary" id="btn-save-freq">Сохранить частоту</button>
+
+    <div style="height:16px"></div>
+
+    <div class="section-title">Лицензия</div>
+    <div class="license-badge license-inactive" id="license-badge">Лицензия не активна</div>
+    <div class="form-group">
+      <label>Ключ активации</label>
+      <input type="text" id="input-license" maxlength="8" placeholder="8 символов">
+    </div>
+    <button class="btn btn-green" id="btn-activate">Активировать</button>
+
+    <div style="height:16px"></div>
+
+    <div class="section-title">Лог</div>
+    <div id="log"></div>
+  </div>
+
+  <!-- Sensor Editor Modal -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal">
+      <h3 id="editor-title">Датчик</h3>
+      <div class="form-group">
+        <label>ID датчика</label>
+        <input type="text" id="editor-id" maxlength="8" placeholder="00000000">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Давление (кПа)</label>
+          <input type="number" id="editor-pressure" placeholder="230">
+        </div>
+        <div class="form-group">
+          <label>Температура (°C)</label>
+          <input type="number" id="editor-temp" placeholder="20">
+        </div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="editor-enabled" checked>
+        <span class="slider"></span>
+        Датчик включен
+      </label>
+      <div class="btn-row">
+        <button class="btn btn-outline" id="editor-cancel">Отмена</button>
+        <button class="btn btn-green" id="editor-save">Сохранить</button>
+      </div>
+      <button class="btn btn-outline" id="editor-close" style="margin-top:8px">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
