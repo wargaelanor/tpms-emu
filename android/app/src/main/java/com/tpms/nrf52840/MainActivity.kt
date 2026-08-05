@@ -141,7 +141,7 @@ class MainActivity : AppCompatActivity() {
         val main = pos == 0
         binding.scrollMain.visibility = if (main) View.VISIBLE else View.GONE
         binding.scrollSettings.visibility = if (main) View.GONE else View.VISIBLE
-        if (!main) binding.scrollSettings.scrollTo(0, 0)
+        if (!main) binding.scrollSettings.post { binding.scrollSettings.scrollTo(0, 0) }
 
         binding.btnTabMain.background = ContextCompat.getDrawable(this,
             if (main) R.drawable.bg_tab_active else R.drawable.bg_tab)
@@ -187,9 +187,11 @@ class MainActivity : AppCompatActivity() {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     holdHandled = false
+                    v.isPressed = true
                     holdRunnable?.let { v.removeCallbacks(it) }
                     val r = Runnable {
                         holdHandled = true
+                        v.isPressed = false
                         v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                         openSensorEditor(holder.index)
                     }
@@ -199,19 +201,29 @@ class MainActivity : AppCompatActivity() {
                 MotionEvent.ACTION_CANCEL -> {
                     holdRunnable?.let { v.removeCallbacks(it) }
                     holdRunnable = null
+                    v.isPressed = false
                 }
                 MotionEvent.ACTION_UP -> {
                     holdRunnable?.let { v.removeCallbacks(it) }
                     holdRunnable = null
+                    v.isPressed = false
                     v.performClick()
                     if (!holdHandled) {
                         // Короткий тап = имитация передачи (аналог TX)
                         sendCommand("\"cmd\":\"tx${holder.index + 1}\"")
+                        flashCard(v)
                     }
                 }
             }
             true
         }
+    }
+
+    private fun flashCard(v: View) {
+        v.animate().scaleX(1.08f).scaleY(1.08f).setDuration(110)
+            .withEndAction {
+                v.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+            }.start()
     }
 
     private fun openSensorEditor(idx: Int) {
@@ -289,14 +301,6 @@ class MainActivity : AppCompatActivity() {
                 sendCommand("\"cmd\":\"license\",\"key\":\"$key\"")
             } else {
                 log(getString(R.string.cmd_key_length))
-            }
-        }
-        binding.btnSaveBattPin.setOnClickListener {
-            val pin = binding.etBattPin.text.toString().toIntOrNull()
-            if (pin != null && (pin == 255 || pin in 14..21)) {
-                sendCommand("\"cmd\":\"battpin\",\"pin\":$pin")
-            } else {
-                log(getString(R.string.cmd_pin_invalid))
             }
         }
         binding.btnBattCal.setOnClickListener {
@@ -779,8 +783,6 @@ class MainActivity : AppCompatActivity() {
                 java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()))
         }
         if (calMv > 0 && !binding.etBattCalMv.hasFocus()) binding.etBattCalMv.setText(calMv.toString())
-        if (pin > 0 && !binding.etBattPin.hasFocus()) binding.etBattPin.setText(pin.toString())
-        else if (pin <= 0 && !binding.etBattPin.hasFocus()) binding.etBattPin.setText("255")
 
         val sniffActive = data.optInt("sniff", 0) == 1
         if (sniffRunning != sniffActive) {

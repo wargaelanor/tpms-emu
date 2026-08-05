@@ -16,7 +16,6 @@
     <string name="section_license">Лицензия</string>
     <string name="label_interval">Интервал, сек</string>
     <string name="label_packets">Пакетов/датчик</string>
-    <string name="label_batt_pin">Источник: 255=VDDH или 14..21</string>
     <string name="label_batt_cal">Реальное напряжение</string>
     <string name="label_capacity">Ёмкость АКБ, мАч</string>
     <string name="label_id">ID датчика</string>
@@ -27,7 +26,6 @@
     <string name="button_sniff_stop">Стоп</string>
     <string name="button_apply">Применить</string>
     <string name="button_save">Сохранить</string>
-    <string name="button_pin">Пин</string>
     <string name="button_calibrate">Калибр.</string>
     <string name="button_reset">Сброс</string>
     <string name="button_calc">Рассчитать</string>
@@ -42,7 +40,6 @@
     <string name="unit_c">°C</string>
     <string name="btn_select">Выбрать</string>
     <string name="cmd_key_length">Ключ должен быть 8 hex символов</string>
-    <string name="cmd_pin_invalid">Пин батареи: 255=VDDH (внутренний) или 14..21 (A0..A7)</string>
     <string name="cmd_cal_invalid">Введи реальное напряжение в мВ (например 3540)</string>
     <string name="batt_life_hint_res">Укажи ёмкость, интервал и пакеты</string>
 </resources>
