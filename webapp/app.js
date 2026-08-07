@@ -82,23 +82,14 @@ function init() {
   document.getElementById('btn-activate').addEventListener('click', activateLicense);
   document.getElementById('btn-license-email').addEventListener('click', openLicenseEmail);
   document.getElementById('btn-batt-cal').addEventListener('click', calibrateBattery);
-  document.getElementById('btn-reset-cal').addEventListener('click', () => sendCmd('"cmd":"battcal_reset"'));
-  document.getElementById('btn-batt-cal').addEventListener('click', markCalibrated);
   document.getElementById('btn-reset-cal').addEventListener('click', () => {
+    sendCmd('"cmd":"battcal_reset"');
     localStorage.removeItem('batt_calib_time');
     renderBattery();
   });
 
   ['input-capacity', 'input-interval', 'input-packets'].forEach(id => {
     document.getElementById(id).addEventListener('input', refreshBatteryLife);
-  });
-  
-  // Freq radio buttons
-  document.querySelectorAll('.freq-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.freq-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    });
   });
   
   // Editor buttons
@@ -311,9 +302,8 @@ function applyStatus(data) {
   
   // Frequency
   const freq = data.freq || 315;
-  document.querySelectorAll('.freq-btn').forEach(b => {
-    b.classList.toggle('active', parseInt(b.dataset.freq) === freq);
-  });
+  const freqRadio = document.querySelector(`.freq-radio[value="${freq}"]`);
+  if (freqRadio) freqRadio.checked = true;
   settings.freq = freq;
   
   // Auto TX
@@ -372,25 +362,23 @@ function renderBattery() {
   const pct = settings.batt_pct;
   const usb = settings.usb;
   const raw = settings.batt_raw;
-  const pin = settings.batt_pin;
-  const cal = settings.batt_cal;
-  
-  const icon = document.querySelector('.battery-icon');
-  const fill = icon.querySelector('.battery-fill');
   const usbMode = usb || (mv === 0 && raw > 0);
 
-  icon.className = 'battery-icon' + (usbMode ? ' usb' : (pct < 15 ? ' low' : ''));
-  fill.style.width = usbMode ? '100%' : Math.max(2, pct) + '%';
+  const icon = document.getElementById('header-battery');
+  const fill = icon.querySelector('.battery-fill');
+  const label = icon.querySelector('.battery-label');
 
-  const pctEl = document.querySelector('.battery-pct');
-  pctEl.textContent = usbMode ? 'USB' : pct + '%';
-  pctEl.style.color = usbMode ? 'var(--accent)' : (pct < 15 ? 'var(--red)' : 'var(--green)');
+  const displayPct = usbMode ? -1 : pct;
+  icon.className = 'battery-icon' + (usbMode ? ' usb' : (pct < 10 ? ' low' : (pct < 30 ? ' operated' : '')));
+  fill.style.width = usbMode ? '0%' : `calc(${Math.max(0, Math.min(100, pct))}% - 4px)`;
+  fill.style.display = usbMode ? 'none' : 'block';
+  label.textContent = usbMode ? 'USB' : (pct >= 0 ? pct : '--');
 
   let details = `Напряжение: ${(mv / 1000).toFixed(2)} В (${pct}%)\n`;
   if (usbMode) details += 'Питание: USB (АКБ не измеряется)\n';
   const calibTime = parseInt(localStorage.getItem('batt_calib_time') || '0', 10);
   details += `Последняя калибровка: ${formatAgo(calibTime)}`;
-  document.querySelector('.battery-details').textContent = details;
+  document.getElementById('batt-details').textContent = details;
 }
 
 function setConnText(text, state) {
@@ -439,8 +427,8 @@ function toggleSniff() {
 }
 
 function saveFreq() {
-  const active = document.querySelector('.freq-btn.active');
-  const freq = active ? parseInt(active.dataset.freq) : 433;
+  const checked = document.querySelector('.freq-radio:checked');
+  const freq = checked ? parseInt(checked.value) : 433;
   sendCmd(`"cmd":"settings","freq":${freq}`);
 }
 
@@ -454,20 +442,20 @@ function activateLicense() {
 }
 
 function updateLicenseUi(license, trialRem, serial) {
-  const badge = document.getElementById('license-badge');
+  const el = document.getElementById('license-status');
   const inputs = document.getElementById('lic-inputs');
   inputs.style.display = license === 2 ? 'none' : 'block';
   if (license === 2) {
-    badge.textContent = 'Лицензия пройдена';
-    badge.className = 'license-badge license-active';
+    el.textContent = 'Лицензия пройдена';
+    el.className = 'license-status loaded';
   } else if (license === 1) {
     const h = trialRem / 3600.0;
     const left = h >= 48 ? Math.round(h / 24) + ' дн' : h.toFixed(1) + ' ч';
-    badge.textContent = 'Пробный период: осталось ~' + left;
-    badge.className = 'license-badge license-trial';
+    el.textContent = 'Пробный период: осталось ~' + left;
+    el.className = 'license-status';
   } else {
-    badge.textContent = 'Лицензия не активна — отправка TX отключена';
-    badge.className = 'license-badge license-inactive';
+    el.textContent = 'Лицензия не активна — отправка TX отключена';
+    el.className = 'license-status blocked';
   }
 }
 
@@ -494,11 +482,6 @@ function calibrateBattery() {
   } else {
     log('Введите реальное напряжение АКБ (мВ)', 'err');
   }
-}
-
-function markCalibrated() {
-  localStorage.setItem('batt_calib_time', String(Date.now()));
-  renderBattery();
 }
 
 function refreshBatteryLife() {

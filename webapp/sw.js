@@ -1,5 +1,5 @@
-const CACHE_NAME = 'tpms-v1';
-const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon.svg'];
+const CACHE_NAME = 'tpms-v2';
+const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/car_top.png', '/manifest.json', '/icon-192.png', '/icon-512.png', '/icon.svg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)));
