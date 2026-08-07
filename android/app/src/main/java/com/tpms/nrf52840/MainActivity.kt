@@ -7,15 +7,19 @@ import android.app.Dialog
 import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
 import android.text.SpannableString
 import android.text.Spanned
+import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
 import android.util.Log
 import android.view.Gravity
@@ -108,6 +112,53 @@ class MainActivity : AppCompatActivity() {
     private var wasSniffActive = false
 
     private val prefs by lazy { getSharedPreferences("tpms_prefs", Context.MODE_PRIVATE) }
+
+    private var deviceSerial = ""
+
+    private fun updateLicenseUi(license: Int, trialRem: Long, serial: String) {
+        if (serial.isNotEmpty()) deviceSerial = serial
+        binding.licInputs.visibility = if (license == 2) View.GONE else View.VISIBLE
+        when (license) {
+            2 -> {
+                binding.tvLicense.text = getString(R.string.license_passed)
+                binding.tvLicense.setTextColor(getColor(R.color.accent))
+            }
+            1 -> {
+                val h = trialRem / 3600.0
+                val left = if (h >= 48) "%.0f дн".format(h / 24) else "%.1f ч".format(h)
+                binding.tvLicense.text = getString(R.string.license_trial, left)
+                binding.tvLicense.setTextColor(getColor(R.color.warning))
+            }
+            else -> {
+                binding.tvLicense.text = getString(R.string.license_no_block)
+                binding.tvLicense.setTextColor(getColor(R.color.danger))
+            }
+        }
+    }
+
+    private fun openLicenseEmail() {
+        val subject = "Запрос лицензии TPMS-NRF52840"
+        val body = buildString {
+            appendLine("Добрый день!")
+            appendLine()
+            appendLine("Прошу выдать лицензионный ключ для устройства:")
+            appendLine("Устройство: TPMS-NRF52840")
+            if (deviceSerial.isNotEmpty()) {
+                appendLine("ID устройства (serial): $deviceSerial")
+            } else {
+                appendLine("(ID устройства появится после подключения по Bluetooth — пришли письмо повторно)")
+            }
+            appendLine("Спасибо!")
+        }
+        val mailto = Uri.fromParts("mailto", "wargaelanor@ya.ru", null).toString()
+        val intent = Intent(Intent.ACTION_SENDTO).apply {
+            data = Uri.parse(mailto)
+            putExtra(Intent.EXTRA_EMAIL, arrayOf("wargaelanor@ya.ru"))
+            putExtra(Intent.EXTRA_SUBJECT, subject)
+            putExtra(Intent.EXTRA_TEXT, body)
+        }
+        runCatching { startActivity(Intent.createChooser(intent, "Отправить запрос лицензии")) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -318,23 +369,33 @@ class MainActivity : AppCompatActivity() {
                 log(getString(R.string.cmd_key_length))
             }
         }
+        binding.btnLicenseEmail.setOnClickListener { openLicenseEmail() }
         binding.btnBattCal.setOnClickListener {
             val mv = binding.etBattCalMv.text.toString().toIntOrNull()
             if (mv != null && mv > 0) {
                 sendCommand("\"cmd\":\"battcal\",\"mv\":$mv")
+                prefs.edit().putLong("batt_calib_time", System.currentTimeMillis()).apply()
+                updateBattCalibLine()
             } else {
                 log(getString(R.string.cmd_cal_invalid))
             }
         }
         binding.btnReset.setOnClickListener { sendCommand("\"cmd\":\"battcal_reset\"") }
-        binding.btnCalcBattLife.setOnClickListener { calcBatteryLife() }
         binding.etCapacity.setText(prefs.getInt("batt_capacity_mah", 850).toString())
         attachPressFlash(
             binding.btnBurst, binding.btnSaveAutoTx, binding.btnSniffToggle,
             binding.btnSniffApply, binding.btnSaveFreq, binding.btnActivate,
-            binding.btnBattCal, binding.btnReset, binding.btnCalcBattLife,
+            binding.btnBattCal, binding.btnReset,
             binding.btnTabMain, binding.btnTabSettings
         )
+
+        val battWatcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) { refreshBatteryLife() }
+        }
+        listOf(binding.etCapacity, binding.etInterval, binding.etPackets).forEach { it.addTextChangedListener(battWatcher) }
+        refreshBatteryLife()
     }
 
     private fun attachPressFlash(vararg views: View) {
@@ -353,7 +414,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun calcBatteryLife() {
+    private fun refreshBatteryLife() {
         val capacity = binding.etCapacity.text.toString().toIntOrNull() ?: 0
         val interval = binding.etInterval.text.toString().toIntOrNull() ?: 0
         val packets = binding.etPackets.text.toString().toIntOrNull() ?: 0
@@ -364,27 +425,48 @@ class MainActivity : AppCompatActivity() {
         }
         prefs.edit().putInt("batt_capacity_mah", capacity).apply()
 
-        val baseMa = 2.5
-        val burstMas = 4.0 * packets * (30.0 * 0.06) + (packets - 1) * (15.0 * 0.1)
-        val txMa = burstMas / interval
-        val avgMa = baseMa + txMa
+        // Режим сна: между передачами BLE выключен, CC1101 обесточен, CPU спит.
+        val sleepMa = 0.05
+        // Энергия одного burst (мА·с): пробуждение+инициализация CC1101,
+        // пакеты TX (25 мА ~60 мс) и паузы между ними (3 мА ~100 мс).
+        val wakeMaS = 15.0 * 0.03
+        val pktMaS = 25.0 * 0.06
+        val gapMaS = 3.0 * 0.1
+        val burstMaS = wakeMaS + packets * pktMaS + (packets - 1) * gapMaS
+        val avgMa = sleepMa + burstMaS / interval
         val hours = capacity / avgMa
-        val burstsPerDay = 86400.0 / interval
-        val txMahPerDay = burstMas * burstsPerDay / 3600.0
 
-        val res = StringBuilder()
-        res.appendLine("Базовый ток (BLE+IDLE): ${"%.2f".format(baseMa)} мА")
-        res.appendLine("Передачи: +${"%.3f".format(txMa)} мА " +
-            "(${burstsPerDay.toInt()} burst/сут ≈ ${"%.2f".format(txMahPerDay)} мАч/сут)")
-        res.appendLine("Средний ток: ${"%.2f".format(avgMa)} мА")
-        res.append("Ресурс: ")
-        res.append(
-            if (hours >= 48) "~${hours.toInt() / 24} сут ${hours.toInt() % 24} ч"
-            else if (hours >= 1) "~%.1f ч".format(hours)
-            else "~%.0f мин".format(hours * 60)
-        )
-        binding.tvBattLifeResult.text = res.toString()
+        binding.tvBattLifeResult.text = getString(R.string.batt_life_res, formatDuration(hours))
         binding.tvBattLifeResult.setTextColor(getColor(R.color.accent))
+    }
+
+    private fun formatDuration(hours: Double): String = when {
+        hours >= 8760 -> "%.1f лет".format(hours / 8760)
+        hours >= 720 -> "%.1f мес".format(hours / 720)
+        hours >= 48 -> "%d дн %d ч".format((hours / 24).toInt(), hours.toInt() % 24)
+        hours >= 1 -> "%.1f ч".format(hours)
+        else -> "%.0f мин".format(hours * 60)
+    }
+
+    private fun formatAgo(timeMillis: Long): String {
+        if (timeMillis <= 0) return "нет"
+        val diff = System.currentTimeMillis() - timeMillis
+        val h = diff / 3600000.0
+        val d = diff / 86400000.0
+        return when {
+            diff < 60000 -> "только что"
+            d >= 2 -> "%.0f дн назад".format(d)
+            d >= 1 -> "%.1f дн назад".format(d)
+            h >= 1 -> "%.1f ч назад".format(h)
+            else -> "%.0f мин назад".format(diff / 60000.0)
+        }
+    }
+
+    private fun updateBattCalibLine() {
+        val calibTime = prefs.getLong("batt_calib_time", 0L)
+        val text = binding.tvBattDetails.text?.toString() ?: ""
+        val prefix = text.substringBefore("Последняя калибровка:")
+        binding.tvBattDetails.text = prefix + "Последняя калибровка: ${formatAgo(calibTime)}"
     }
 
     private fun checkPermissions() {
@@ -796,28 +878,20 @@ class MainActivity : AppCompatActivity() {
         if (!binding.etInterval.hasFocus()) binding.etInterval.setText(data.optInt("tx_int", 360).toString())
         if (!binding.etPackets.hasFocus()) binding.etPackets.setText(data.optInt("tx_pkt", 2).toString())
 
-        val licensed = data.optInt("license", 0) == 1
-        binding.tvLicense.text = getString(
-            if (licensed) R.string.license_active else R.string.license_inactive)
-        binding.tvLicense.setTextColor(getColor(if (licensed) R.color.accent else R.color.warning))
+        updateLicenseUi(data.optInt("license", 0), data.optLong("trial_rem", 0), data.optString("serial", ""))
 
         val mv = data.optInt("batt_mv", 0)
         val pct = data.optInt("batt_pct", 0)
         val raw = data.optInt("batt_raw", 0)
-        val pin = data.optInt("batt_pin", 0)
         val calMv = data.optInt("batt_cal", 0)
         val usb = data.optInt("usb", 0) == 1
-        val pinLabel = if (pin == 255) "VDDH" else "pin=$pin"
 
         val usbMode = usb || (mv == 0 && raw > 0)
         binding.batteryIcon.setPercent(if (usbMode) -1 else pct)
         binding.tvBattDetails.text = buildString {
-            append("Источник: $pinLabel · raw=$raw\n")
             append("Напряжение: ${"%.2f".format(mv / 1000.0)} В ($pct%)\n")
-            append("Калибровка: ${if (calMv > 0) "${calMv}mV" else "нет"}\n")
             if (usb) append("Питание: USB (АКБ не измеряется)\n")
-            append("Обновлено: " +
-                java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()))
+            append("Последняя калибровка: ${formatAgo(prefs.getLong("batt_calib_time", 0L))}")
         }
         if (calMv > 0 && !binding.etBattCalMv.hasFocus()) binding.etBattCalMv.setText(calMv.toString())
 

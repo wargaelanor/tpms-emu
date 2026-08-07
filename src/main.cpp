@@ -79,7 +79,7 @@ struct __attribute__((packed)) TPMSConfig {
     uint8_t     freq;           // 0 = 315 MHz, 1 = 433 MHz (315/433 do not fit uint8_t)
     SensorConfig sensors[MAX_SENSORS]; // 4 * 7 = 28 байт
     uint8_t     license_key[4]; // 4 байта лицензии (упрощённо)
-    uint32_t    trial_start;    // начало триала (unix timestamp)
+    uint32_t    trial_start;    // накопленные секунды работы (uptime-триал)
     uint16_t    batt_mah;       // ёмкость батареи мАч
     uint8_t     batt_pin;       // аналоговый пин батареи (Arduino-номер), 0/255 = авто A1
     uint16_t    batt_cal_raw;   // сырой ADC при калибровке (0 = нет калибровки)
@@ -131,14 +131,22 @@ static volatile uint16_t cmdBufLen = 0;
 // Состояние
 static bool snifferActive = false;
 static uint32_t lastAutoTx = 0;
-static uint32_t trialStartTime = 0;
 static uint32_t licenseValid = 0; // 0 = no license, 1 = trial, 2 = full
+static bool licenseKeyOk = false;         // сохранён валидный ключ (привязка к серийнику)
+static uint32_t trialUsed = 0;            // накопленные секунды работы (uptime-триал, персист)
+static uint32_t trialRefMs = 0;           // millis-опора текущего сеанса
+static uint32_t lastTrialPersist = 0;     // millis последнего сохранения триала
 static volatile bool configDirty = false;
 
 // BLE power management
 static bool bleConnected = false;
+
+// Режим сна: после окна конфигурации (60 с после включения) без BLE-соединения
+// устройство спит между передачами. Окно анонса нужно, чтобы телефон успел подключиться.
+static bool inSleep = false;
+static uint32_t sleepWindowEnd = 0;
+#define CONFIG_WINDOW_MS 60000UL
 static bool bleAdvertising = true;
-static bool bleHadConnection = false;  // true после первого реального connect
 static uint32_t bleStartTime = 0;
 #define BLE_ADVERTISE_TIMEOUT_MS  0xFFFFFFFFu  // анонсируемся бесконечно, пока нет подключения
 
@@ -257,13 +265,21 @@ static void cc1101PowerOff() {
 }
 
 static void cc1101Sleep() {
-    // Temporarily disabled for TX debugging — replicating old behavior
-    // where CC1101 stays powered and configured after setup()
-    radio.sendCommand(CC1101_SIDLE);  // just go to IDLE
+    // Полное отключение питания CC1101 (пин VCC в LOW). Между передачами
+    // модуль не потребляет ни одного мА. При следующем пробуждении
+    // cc1101Wake() заново подаёт питание и переинициализирует радио.
+    cc1101PowerOff();
 }
 
 static void cc1101Wake() {
-    // No-op — CC1101 stays powered and configured from setup()
+    // Питание + полная переинициализация: после снятия VCC все регистры
+    // CC1101 сброшены к заводским, поэтому без radio.init() радио не работает.
+    cc1101PowerOn();
+    radio.init();
+    radio.setFreq(getFreqHz());
+    radio.setPA(cfg.power);
+    radio.setDRate(cfg.datarate);
+    radio.setDeviation((float)cfg.deviation / 10.0f);
 }
 
 // =========================================================================
@@ -289,6 +305,39 @@ static void sendLog(const char *msg) {
     bleSendChunked(buf);
 }
 
+// =========================================================================
+// Лицензия: привязка ключа к серийнику чипа, uptime-триал 24 ч, блок TX
+// =========================================================================
+static uint32_t deviceSerial() {
+    return NRF_FICR->DEVICEID[0];
+}
+
+static uint32_t licenseKeyFor(uint32_t serial) {
+    uint32_t k = serial ^ 0x9C5AA7E1u;
+    k = (k >> 13) | (k << 19);
+    k ^= 0x3D7B1E8Fu;
+    k = k * 0x9E3779B9u;
+    return k & 0xFFFFFFFFu;
+}
+
+static bool checkKey(uint32_t key) {
+    return key == licenseKeyFor(deviceSerial());
+}
+
+static uint32_t trialElapsedSec() {
+    return trialUsed + (millis() - trialRefMs) / 1000;
+}
+
+static void refreshLicense() {
+    if (licenseKeyOk) {
+        licenseValid = 2;
+    } else if (trialElapsedSec() < TRIAL_SECONDS) {
+        licenseValid = 1;
+    } else {
+        licenseValid = 0;
+    }
+}
+
 static uint32_t calcFlashChecksum(const TPMSConfig *c) {
     uint32_t sum = 0;
     const uint32_t *p = (const uint32_t *)c;
@@ -299,7 +348,6 @@ static uint32_t calcFlashChecksum(const TPMSConfig *c) {
 }
 
 static bool saveConfig() {
-    cfg.trial_start = trialStartTime;
 
     FlashConfig fc;
     fc.magic = CONFIG_FLASH_MAGIC;
@@ -324,6 +372,16 @@ static bool saveConfig() {
     sendLog("Config saved to flash");
 
     return true;
+}
+
+// Персистим накопленный uptime-триал во флеш раз в час
+static void trialPersistIfDue() {
+    if (millis() - lastTrialPersist < 3600000UL) return;
+    trialUsed = trialElapsedSec();
+    cfg.trial_start = trialUsed;
+    trialRefMs = millis();
+    lastTrialPersist = millis();
+    saveConfig();
 }
 
 // =========================================================================
@@ -572,6 +630,13 @@ static void send_pmv107j_sensor(uint8_t sensorIdx) {
     if (sensorIdx >= MAX_SENSORS) return;
     if (!(cfg.sensors[sensorIdx].flags & 0x01)) return; // disabled
 
+    // Блокировка TX без лицензии/триала (статус 0). Сниффер и настройки остаются.
+    refreshLicense();
+    if (licenseValid == 0) {
+        sendLog("TX blocked: license required");
+        return;
+    }
+
     SensorConfig *s = &cfg.sensors[sensorIdx];
     uint8_t counter = (s->flags >> 1) & 0x03;
     uint8_t batFlag = isBatteryLow() ? 1 : 0;
@@ -606,7 +671,63 @@ static void sendBurst() {
             delay(300);  // пауза между датчиками
         }
     }
+    cc1101Sleep();
     sendLog("Burst done");
+}
+
+// =========================================================================
+// Энергосбережение: авто-TX, батарея, LED, переход в сон
+// =========================================================================
+static void doAutoTxBurst() {
+    for (uint8_t i = 0; i < cfg.tx_packets; i++) {
+        for (uint8_t s = 0; s < MAX_SENSORS; s++) {
+            if (cfg.sensors[s].flags & 0x01) {
+                send_pmv107j_sensor(s);
+                delay(30);
+            }
+        }
+        if (i < cfg.tx_packets - 1) delay(100);
+    }
+}
+
+static void maybeAutoTx() {
+    refreshLicense();
+    if (!cfg.tx_enabled || snifferActive || licenseValid == 0) return;
+    uint32_t now = millis() / 1000;
+    if (now - lastAutoTx < cfg.tx_interval) return;
+    lastAutoTx = now;
+    digitalWrite(PIN_STATUS_LED, HIGH);
+    cc1101Wake();
+    doAutoTxBurst();
+    cc1101Sleep();
+    digitalWrite(PIN_STATUS_LED, LOW);
+}
+
+static void enterSleep() {
+    if (inSleep) return;
+    inSleep = true;
+    Bluefruit.Advertising.stop();
+    cc1101Sleep();
+    digitalWrite(PIN_STATUS_LED, LOW);
+    sendLog("Sleep mode");
+}
+
+static void batteryCheck() {
+    if (!isUsbPowered() && isBatteryCritical()) {
+        static uint32_t lastBattWarn = 0;
+        if (millis() - lastBattWarn > 30000) {
+            lastBattWarn = millis();
+            sendLog("Battery low warning");
+        }
+    }
+}
+
+static void ledBlink() {
+    static uint32_t lastBlink = 0;
+    if (millis() - lastBlink > 1000) {
+        lastBlink = millis();
+        digitalWrite(PIN_STATUS_LED, !digitalRead(PIN_STATUS_LED));
+    }
 }
 
 // =========================================================================
@@ -907,7 +1028,12 @@ static void setDefaultConfig() {
     cfg.sensors[2].id = 0x0D784088; cfg.sensors[2].pressure = 2300; cfg.sensors[2].temperature = 20; cfg.sensors[2].flags = 0x01;
     cfg.sensors[3].id = 0x0C765088; cfg.sensors[3].pressure = 2300; cfg.sensors[3].temperature = 20; cfg.sensors[3].flags = 0x01;
 
-    trialStartTime = millis() / 1000;
+    // Триал (uptime): начинаем с нуля, лицензии нет
+    cfg.trial_start = 0;
+    trialUsed = 0;
+    trialRefMs = millis();
+    lastTrialPersist = millis();
+    licenseKeyOk = false;
 }
 
 static bool loadConfig() {
@@ -927,7 +1053,17 @@ static bool loadConfig() {
     }
 
     memcpy(&cfg, &fc->cfg, sizeof(cfg));
-    trialStartTime = cfg.trial_start;
+
+    // Восстановление uptime-триала и проверка сохранённого ключа
+    trialUsed = cfg.trial_start;
+    trialRefMs = millis();
+    lastTrialPersist = millis();
+    uint32_t keyVal = ((uint32_t)cfg.license_key[0] << 24) |
+                      ((uint32_t)cfg.license_key[1] << 16) |
+                      ((uint32_t)cfg.license_key[2] << 8) |
+                      (uint32_t)cfg.license_key[3];
+    licenseKeyOk = checkKey(keyVal);
+    refreshLicense();
 
     // Валидация batt_pin: старые конфиги, сохранённые до добавления этого поля,
     // содержат мусор. Допустимы 0xFF (внутренний VDDH/5) или аналоговые пины A0-A7 (Arduino 14-21).
@@ -950,13 +1086,6 @@ static bool loadConfig() {
         configDirty = true;
     }
 
-    if (cfg.license_key[0] || cfg.license_key[1] || cfg.license_key[2] || cfg.license_key[3]) {
-        licenseValid = 2;
-    } else if (trialStartTime > 0) {
-        uint32_t elapsed = (millis() / 1000) - trialStartTime;
-        licenseValid = (elapsed < TRIAL_SECONDS) ? 1 : 0;
-    }
-
     sendLog("Config loaded from flash");
     return true;
 }
@@ -975,14 +1104,16 @@ static void sendStatus() {
     pos += snprintf(buf + pos, sizeof(buf) - pos,
         "\"freq\":%d,\"drate\":%lu,\"dev\":%u,\"pwr\":%u,"
         "\"tx_en\":%d,\"tx_int\":%u,\"tx_pkt\":%u,"
-"\"batt_mv\":%u,\"batt_pct\":%u,\"batt_raw\":%d,\"batt_pin\":%d,\"batt_cal\":%u,\"license\":%u,"
+"\"batt_mv\":%u,\"batt_pct\":%u,\"batt_raw\":%d,\"batt_pin\":%d,\"batt_cal\":%u,\"license\":%u,\"serial\":\"%08X\",\"trial_rem\":%u,"
         "\"sniff\":%d,\"usb\":%d,",
         getFreqJson(), (unsigned long)cfg.datarate, (unsigned)cfg.deviation, (unsigned)cfg.power,
         cfg.tx_enabled, (unsigned)cfg.tx_interval, (unsigned)cfg.tx_packets,
         (unsigned)readBatteryMv(), (unsigned)getBatteryPercent(), readBatteryRaw(),
         (int)cfg.batt_pin,
         cfg.batt_cal_raw > 0 ? cfg.batt_cal_mv : 0,
-        (unsigned)licenseValid, snifferActive ? 1 : 0, isUsbPowered() ? 1 : 0);
+        (unsigned)licenseValid, (unsigned)deviceSerial(),
+        (uint32_t)(licenseValid < 2 ? (TRIAL_SECONDS > trialElapsedSec() ? TRIAL_SECONDS - trialElapsedSec() : 0) : 0),
+        snifferActive ? 1 : 0, isUsbPowered() ? 1 : 0);
 
     // Датчики
     pos += snprintf(buf + pos, sizeof(buf) - pos, "\"sensors\":[");
@@ -1284,21 +1415,26 @@ float freq = (cfg.freq == 1) ? 433.0f : 315.0f;
             snprintf(lb, sizeof(lb), "ECHO FAIL: no data");
         }
         sendLog(lb);
-        radio.setPA(cfg.power);
-        radio.setRxState();
+        cc1101Sleep();
     }
     else if (strcmp(cmdName, "license") == 0) {
         char keyStr[16] = {0};
         if (jsonGetString(cmd, "key", keyStr, sizeof(keyStr)) && strlen(keyStr) == 8) {
-            // Упрощённая проверка: принимаем любой 8-символьный hex ключ
+            // Ключ привязан к серийнику чипа: валиден только ключ, посчитанный из
+            // FICR DEVICEID по секретной формуле (лицензия выдаётся под конкретный девайс).
             uint32_t keyVal = (uint32_t)strtoul(keyStr, NULL, 16);
-            cfg.license_key[0] = (keyVal >> 24) & 0xFF;
-            cfg.license_key[1] = (keyVal >> 16) & 0xFF;
-            cfg.license_key[2] = (keyVal >> 8) & 0xFF;
-            cfg.license_key[3] = keyVal & 0xFF;
-            licenseValid = 2;
-            configDirty = true;
-            sendLog("License activated");
+            if (checkKey(keyVal)) {
+                cfg.license_key[0] = (keyVal >> 24) & 0xFF;
+                cfg.license_key[1] = (keyVal >> 16) & 0xFF;
+                cfg.license_key[2] = (keyVal >> 8) & 0xFF;
+                cfg.license_key[3] = keyVal & 0xFF;
+                licenseKeyOk = true;
+                refreshLicense();
+                configDirty = true;
+                sendLog("License activated");
+            } else {
+                sendLog("Invalid license key");
+            }
         } else {
             sendLog("Invalid license key");
         }
@@ -1308,6 +1444,7 @@ float freq = (cfg.freq == 1) ? 433.0f : 315.0f;
         uint8_t idx = cmdName[2] - '1';
         if (snifferActive) sniffer_stop();
         send_pmv107j_sensor(idx);
+        cc1101Sleep();
     }
     else {
         char logBuf[64];
@@ -1328,14 +1465,15 @@ static void setupBLE() {
     // Connection callbacks
     Bluefruit.Periph.setConnectCallback([](uint16_t conn_handle) {
         bleConnected = true;
-        bleHadConnection = true;  // было реальное подключение → можно спать при отключении
+        inSleep = false;  // активное соединение — обычный режим работы
         // Don't send any connection here — phone hasn't written CCCD yet
     });
     Bluefruit.Periph.setDisconnectCallback([](uint16_t conn_handle, uint8_t reason) {
         bleConnected = false;
         if (snifferActive) sniffer_stop();
-        // Авто-сон отключён: устройство остаётся в анонсе, чтобы телефон мог переподключиться.
-        // (Сон можно добавить позже, когда будет готова стабильная работа с батареей.)
+        // После отключения не рестартуем анонс: если окно конфигурации (60 с) ещё
+        // активно, телефон успеет переподключиться; иначе loop() переведёт устройство
+        // в сон (loop→enterSleep). Для нового подключения нужен перезапуск МК.
     });
 
     // Configure and Start Device Information Service
@@ -1354,7 +1492,7 @@ static void setupBLE() {
     // Secondary Scan Response packet (optional)
     Bluefruit.ScanResponse.addName();
 
-    Bluefruit.Advertising.restartOnDisconnect(true);
+    Bluefruit.Advertising.restartOnDisconnect(false);  // сон вместо вечного анонса
     Bluefruit.Advertising.setInterval(160, 160);  // in unit of 0.625 ms
     Bluefruit.Advertising.setFastTimeout(30);
     Bluefruit.Advertising.start(0);               // 0 = Don't stop advertising after n seconds
@@ -1429,6 +1567,8 @@ void setup() {
     blinkLed(3, 200);
     sendLog("TPMS-NRF52840 ready");
     sendStatus();
+    // Окно конфигурации: 60 с анонса после включения, затем сон, если телефон не подключился
+    sleepWindowEnd = millis() + CONFIG_WINDOW_MS;
     Serial.println("DBG: setup done");
     Serial.flush();
 
@@ -1440,61 +1580,55 @@ void setup() {
 // MAIN LOOP
 // =========================================================================
 void loop() {
-    // 0. BLE power management отключён: устройство анонсируется непрерывно, пока работает.
-    //    (Сон отключён на время отладки, чтобы телефон всегда мог найти и переподключиться.)
+    // 0. Лицензия: обновляем uptime-триал и раз в час персистим его во флеш
+    refreshLicense();
+    trialPersistIfDue();
 
-    // 1. Обработка BLE команд
+    // 0. BLE-команды (приходят только при активном соединении)
     if (cmdReady) {
         processCommand(cmdBuf);
         cmdBufLen = 0;
         cmdReady = false;
     }
 
-    // 1.1 Отложенное сохранение конфига (не в BLE callback!)
+    // 0.1 Отложенное сохранение конфига (не в BLE callback!)
     if (configDirty) {
         configDirty = false;
         saveConfig();
     }
 
-    // 2. Сниффер
+    // 1. Сниффер (активен независимо от BLE-соединения)
     if (snifferActive) {
         sniffer_loop();
+        delay(1);
+        return;
     }
 
-    // 3. Авто-TX
-    if (cfg.tx_enabled && !snifferActive) {
-        uint32_t now = millis() / 1000;
-        if (now - lastAutoTx >= cfg.tx_interval) {
-            lastAutoTx = now;
-            for (uint8_t i = 0; i < cfg.tx_packets; i++) {
-                for (uint8_t s = 0; s < MAX_SENSORS; s++) {
-                    if (cfg.sensors[s].flags & 0x01) {
-                        send_pmv107j_sensor(s);
-                        delay(30);
-                    }
-                }
-                if (i < cfg.tx_packets - 1) delay(100);
-            }
+    // 2. Подключён к телефону: обычный режим. CC1101 спит между передачами.
+    if (bleConnected) {
+        inSleep = false;
+        maybeAutoTx();
+        batteryCheck();
+        ledBlink();
+        delay(1);
+        return;
+    }
+
+    // 3. Нет соединения: пока идёт окно конфигурации (60 с после включения)
+    //    устройство анонсируется — телефон может подключиться.
+    if (!inSleep) {
+        if (millis() >= sleepWindowEnd) {
+            enterSleep();
+        } else {
+            maybeAutoTx();
+            batteryCheck();
+            delay(10);
         }
+        return;
     }
 
-    // 4. Проверка батареи (только индикация, НЕ отключает авто-TX).
-    //    При питании от USB batt_mv = 0 (батарея не измеряется) — не считаем это
-    //    критичным, иначе спамится ложный warning каждые 30 с.
-    if (!isUsbPowered() && isBatteryCritical()) {
-        static uint32_t lastBattWarn = 0;
-        if (millis() - lastBattWarn > 30000) {
-            lastBattWarn = millis();
-            sendLog("Battery low warning");
-        }
-    }
-
-    // 5. LED индикация при передаче
-    static uint32_t lastBlink = 0;
-    if (cfg.tx_enabled && (millis() - lastBlink > 1000)) {
-        lastBlink = millis();
-        digitalWrite(PIN_STATUS_LED, !digitalRead(PIN_STATUS_LED));
-    }
-
-    delay(1);
+    // 4. Сон: BLE-анонс остановлен, CC1101 обесточен, CPU спит через
+    //    tickless idle (sd_app_evt_wait). Просыпается только на периодический TX.
+    maybeAutoTx();
+    vTaskDelay(pdMS_TO_TICKS(500));
 }

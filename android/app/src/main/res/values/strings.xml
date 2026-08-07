@@ -28,13 +28,15 @@
     <string name="button_save">Сохранить</string>
     <string name="button_calibrate">Калибр.</string>
     <string name="button_reset">Сброс</string>
-    <string name="button_calc">Рассчитать</string>
     <string name="button_activate">Активировать</string>
     <string name="button_cancel">Отмена</string>
     <string name="license_key">Ключ (8 hex)</string>
     <string name="license_active">Лицензия активирована</string>
     <string name="license_inactive">Без лицензии</string>
-    <string name="batt_hint">BLE-анонс (~1 мА) + CC1101 IDLE (~1.5 мА). Интервал передач почти не влияет.</string>
+    <string name="button_get_key">Получить ключ по почте</string>
+    <string name="license_passed">Лицензия пройдена</string>
+    <string name="license_trial">Пробный период: осталось %1$s</string>
+    <string name="license_no_block">Лицензия не активна — отправка TX отключена</string>
     <string name="sensor_enabled">Датчик включён</string>
     <string name="sniffer_on">Сниффер: вкл</string>
     <string name="sniffer_off">Сниффер: выкл</string>
@@ -47,4 +49,5 @@
     <string name="cmd_key_length">Ключ должен быть 8 hex символов</string>
     <string name="cmd_cal_invalid">Введи реальное напряжение в мВ (например 3540)</string>
     <string name="batt_life_hint_res">Укажи ёмкость, интервал и пакеты</string>
+    <string name="batt_life_res">Время работы от АКБ: ≈ %1$s</string>
 </resources>
