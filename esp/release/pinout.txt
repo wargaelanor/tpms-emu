@@ -1,0 +1,113 @@
+==============================================================================
+  TPMS Sniffer/Emulator — CC1101 Pinout Reference
+  Updated: 01.07.2026 — added battery voltage divider
+==============================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ESP32-C3 Mini  →  CC1101 Module (8-pin, 315 MHz)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ESP32-C3 Pin        →  CC1101 Pin       Function
+  ─────────────────────────────────────────────────────────
+  GPIO6               →  Pin 1 (VCC)      Power (direct from GPIO!)
+  GND                 →  Pin 2 (GND)      Ground
+  GPIO1 (FSPI MOSI)   →  Pin 3 (SI/DIN)   SPI MOSI
+  GPIO3 (FSPI MISO)   →  Pin 4 (SO/DOUT)  SPI MISO
+  GPIO2 (FSPI SCK)    →  Pin 5 (CLK)      SPI Clock
+  GPIO7               →  Pin 6 (CSN)      Chip Select
+  GPIO4               →  Pin 7 (GDO0)     GDO0
+  GPIO5               →  Pin 8 (GDO2)     GDO2
+
+  NOTE: CC1101 VCC is powered directly from GPIO6!
+    - GPIO HIGH (3.3V) = CC1101 ON
+    - GPIO LOW  (0V)   = CC1101 OFF
+    - GPIO6 max current: 40mA (CC1101 TX draws ~15-20mA)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ESP8266 D1 Mini  →  CC1101 Module (8-pin, 315 MHz)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ESP8266 Pin         →  CC1101 Pin       Function
+  ─────────────────────────────────────────────────────────
+  D4 (GPIO2)          →  CC1101 GND via 2N7002  Power (low-side switch)
+  GND                 →  Pin 2 (GND)      Ground
+  D6 (GPIO12 / HSPI)  →  Pin 3 (SI/DIN)   SPI MOSI
+  D7 (GPIO13 / HSPI)  →  Pin 4 (SO/DOUT)  SPI MISO
+  D5 (GPIO14 / HSPI)  →  Pin 5 (CLK)      SPI Clock
+  D8 (GPIO15)         →  Pin 6 (CSN)      Chip Select
+  D1 (GPIO5)          →  Pin 7 (GDO0)     GDO0
+  D2 (GPIO4)          →  Pin 8 (GDO2)     GDO2
+
+  NOTE: ESP8266 uses HSPI (software-wired), NOT native SPI.
+  NOTE: D4 (GPIO2) drives N-MOSFET (2N7002) gate — low-side switch.
+  NOTE: CC1101 VCC always connected to VCC_3V3 (3.3V).
+  NOTE: When D4=HIGH → MOSFET ON → CC1101 GND connected → module ON.
+  NOTE: When D4=LOW → MOSFET OFF → CC1101 floating → module OFF.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Battery Voltage Divider (BOTH boards)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  18650 (3.0-4.2V) → TP4056 (charge) → DW01 (protection) → divider → ADC
+
+  Voltage divider: 10kΩ + 10kΩ (both boards identical)
+
+    18650+ ──[10kΩ]──┬──[10kΩ]── GND
+                     │
+                     └── A0 (ESP8266) / GPIO0 (ESP32-C3)
+
+  Formula: Vbat = ADC_reading * 2
+
+  Vbat    Vout    ADC result
+  ─────────────────────────
+  4.2V    2.1V    Full charge
+  3.7V    1.85V   Nominal
+  3.3V    1.65V   LOW warning
+  3.0V    1.5V    CRITICAL — device shuts down
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Deep Sleep Wiring (required for battery operation)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ESP8266:  D0 (GPIO16) → RST  (wake-up from deep sleep)
+  ESP32-C3: Timer wake (no extra wiring needed)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Power Circuit
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [18650 3.7V] → [TP4056] → [DW01+FS8205] → [AMS1117-3.3] → [ESP32/ESP866]
+       ↑            ↑             ↑                ↑
+    Battery     USB 5V       Over-discharge    3.3V output
+    3000mAh    (charge)      protection        (stable)
+
+  Components needed (×2 for both boards):
+  - TP4056 module (1A charge)
+  - DW01 + FS8205 (protection)
+  - AMS1117-3.3 LDO
+  - 10kΩ resistors × 2 (voltage divider)
+  - 18650 holder
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CC1101 Module Pinout (bottom view, component side up)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+       ┌─────────┐
+  VCC ─┤1       8├─ GDO2
+  GND ─┤2       7├─ GDO0
+   SI ─┤3       6├─ CSN
+   SO ─┤4       5├─ SCK
+       └─────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Notes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  - Both boards operate at 3.3V logic level
+  - CC1101 VCC range: 1.8V – 3.6V (3.3V recommended)
+  - Spring antenna is tuned for 315 MHz
+  - For 433 MHz: replace antenna or use 433 MHz CC1101 module
+  - Keep wires short (< 10 cm) for reliable SPI at 10 MHz
+  - CC1101 SPI max clock: 10 MHz (mode 0,0)
+  - Battery cutoff: 3.0V (device enters deep sleep to protect battery)
+  - Estimated battery life (3000mAh, 5min interval): ~18 days

@@ -1,0 +1,48 @@
+--- Miniterm on COM8  115200,8,N,1 ---
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H ---
+[DIAG-TX] millis=30001
+[DIAG-TX] MARC before=0x0D
+[DIAG-TX] MARC after TX set=0x13
+[DIAG-TX] MARC after restore=0x0D
+[DIAG-TX] === TX BURST DONE ===
+[FIFO] RSSI=-95 len=4 bytes: F8 FE 5B 5F
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-91 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-99 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-99 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-97 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-96 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-90 RX=0 FREQEST=-32
+[DIAG-TX] millis=60002
+[DIAG-TX] MARC before=0x0D
+[DIAG-TX] MARC after TX set=0x13
+[DIAG-TX] MARC after restore=0x0D
+[DIAG-TX] === TX BURST DONE ===
+[FIFO] RSSI=-100 len=5 bytes: CE 1F CF B5 FF
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-94 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-101 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-100 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-93 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-100 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-94 RX=0 FREQEST=-32
+[DIAG-TX] millis=90003
+[DIAG-TX] MARC before=0x0D
+[DIAG-TX] MARC after TX set=0x13
+[DIAG-TX] MARC after restore=0x0D
+[DIAG-TX] === TX BURST DONE ===
+[FIFO] RSSI=-101 len=4 bytes: E3 3D D1 CF
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-100 RX=0 FREQEST=-32
+[LOOP] WiFi clients: 0, WS clients: 0
+[SNIFFER] MARC=0x0D RSSI=-100 RX=0 FREQEST=-32

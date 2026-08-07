@@ -1,0 +1,9 @@
+.pio/
+.vscode/
+*.o
+*.elf
+__pycache__/
+*.pyc
+rtl_433-win-x64-24.10/
+test_pins/
+test_sniffer/

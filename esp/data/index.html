@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TPMS Emulator v5</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--primary:#7c4dff;--success:#69f0ae;--warning:#ffd740;--error:#ff5252;
+  --card-bg:rgba(255,255,255,0.06);--card-border:rgba(255,255,255,0.1);--radius:12px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:linear-gradient(135deg,#1a0533 0%,#0d1b3e 50%,#0a1628 100%);
+  color:#e0e0e0;min-height:100vh;padding:12px;background-attachment:fixed}
+.container{max-width:600px;margin:0 auto}
+
+/* Header */
+.header{text-align:center;padding:10px 0 14px}
+.header h1{font-size:20px;font-weight:700}
+.header .sub{font-size:12px;color:#9e9e9e;margin-top:2px}
+
+/* Car layout */
+.car{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.sensor-card{background:var(--card-bg);border:1px solid var(--card-border);
+  border-radius:var(--radius);padding:14px;backdrop-filter:blur(10px)}
+.sensor-card .pos{font-size:11px;color:#9e9e9e;text-transform:uppercase;letter-spacing:.5px;
+  font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.sensor-card .pos::before{content:'';width:3px;height:10px;background:var(--primary);border-radius:2px}
+
+/* Fields */
+.field{margin-bottom:6px}
+.field label{display:block;font-size:10px;color:#9e9e9e;margin-bottom:2px;text-transform:uppercase;letter-spacing:.3px}
+.field input{width:100%;padding:6px 8px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);
+  border-radius:6px;color:#fff;font-size:13px;font-family:inherit;outline:none;transition:border .2s}
+.field input:focus{border-color:var(--primary)}
+.field-row{display:flex;gap:8px}
+.field-row .field{flex:1}
+.field-id input{font-family:monospace;font-size:12px;letter-spacing:1px;text-transform:uppercase}
+
+/* Toggle */
+.toggle-wrap{display:flex;align-items:center;gap:8px;margin:6px 0 8px}
+.toggle{position:relative;width:40px;height:22px;cursor:pointer}
+.toggle input{opacity:0;width:0;height:0}
+.toggle .slider{position:absolute;inset:0;background:rgba(255,255,255,0.1);border-radius:11px;transition:.2s}
+.toggle .slider::before{content:'';position:absolute;width:16px;height:16px;left:3px;top:3px;background:#666;border-radius:50%;transition:.2s}
+.toggle input:checked+.slider{background:rgba(105,240,174,0.3)}
+.toggle input:checked+.slider::before{transform:translateX(18px);background:var(--success)}
+.toggle-label{font-size:12px;user-select:none}
+
+/* Buttons */
+.btn-row{display:flex;gap:6px;margin-top:8px}
+.btn{padding:6px 12px;border:none;border-radius:6px;font-size:11px;font-weight:600;
+  cursor:pointer;transition:all .15s;font-family:inherit;flex:1}
+.btn:active{transform:scale(0.97)}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-primary:hover{background:#651fff}
+.btn-success{background:#00c853;color:#fff}
+.btn-success:hover{background:#00e676}
+.btn-warning{background:#ff9100;color:#fff}
+.btn-warning:hover{background:#ffab40}
+.btn-danger{background:var(--error);color:#fff}
+.btn-danger:hover{background:#ff1744}
+.btn-outline{background:transparent;border:1px solid rgba(255,255,255,0.2);color:#ccc}
+.btn-outline:hover{background:rgba(255,255,255,0.05)}
+
+/* Auto-TX card */
+.atx-card{background:var(--card-bg);border:1px solid var(--card-border);
+  border-radius:var(--radius);padding:14px;margin-bottom:12px;backdrop-filter:blur(10px)}
+.atx-card h2{font-size:12px;color:#9e9e9e;font-weight:600;text-transform:uppercase;
+  letter-spacing:.5px;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.atx-card h2::before{content:'';width:3px;height:10px;background:var(--warning);border-radius:2px}
+.atx-row{display:flex;gap:10px;margin-bottom:10px}
+.atx-row .field{flex:1}
+.save-ok{color:var(--success);font-size:11px;min-height:16px;margin-top:4px}
+
+/* Log */
+.log-box{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);
+  border-radius:8px;padding:8px;height:140px;overflow-y:auto;font-size:10px;
+  font-family:monospace;margin-bottom:12px;color:#9e9e9e;line-height:1.5}
+.log-box .log-ok{color:var(--success)}
+.log-box .log-err{color:var(--error)}
+
+@media(max-width:400px){
+  .car{grid-template-columns:1fr}
+  .field-row{flex-direction:column;gap:6px}
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+  <h1>TPMS Emulator</h1>
+  <div class="sub">PMV-107J &middot; <span id="freqDisplay">315</span> MHz &middot; Acura RDX 2008 &middot; ESP32-C3</div>
+</div>
+
+<!-- 4 sensor cards in car layout -->
+<div class="car">
+  <!-- Sensor 0: PL -->
+  <div class="sensor-card">
+    <div class="pos">PL — Левое Переднее</div>
+    <div class="field field-id"><label>ID датчика</label><input type="text" id="id0" maxlength="8" placeholder="00000000"></div>
+    <div class="field-row">
+      <div class="field"><label>Давл., кПа</label><input type="number" id="p0" value="230" min="0" max="400"></div>
+      <div class="field"><label>Темп., &deg;C</label><input type="number" id="t0" value="20" min="-40" max="85"></div>
+    </div>
+    <div class="toggle-wrap">
+      <label class="toggle"><input type="checkbox" id="e0" checked><span class="slider"></span></label>
+      <span class="toggle-label" id="el0">Вкл</span>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveSensor(0)">Сохранить</button>
+      <button class="btn btn-success" onclick="txOne(0)">Отправить</button>
+    </div>
+  </div>
+
+  <!-- Sensor 1: PP -->
+  <div class="sensor-card">
+    <div class="pos">PP — Правое Переднее</div>
+    <div class="field field-id"><label>ID датчика</label><input type="text" id="id1" maxlength="8" placeholder="00000000"></div>
+    <div class="field-row">
+      <div class="field"><label>Давл., кПа</label><input type="number" id="p1" value="230" min="0" max="400"></div>
+      <div class="field"><label>Темп., &deg;C</label><input type="number" id="t1" value="20" min="-40" max="85"></div>
+    </div>
+    <div class="toggle-wrap">
+      <label class="toggle"><input type="checkbox" id="e1" checked><span class="slider"></span></label>
+      <span class="toggle-label" id="el1">Вкл</span>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveSensor(1)">Сохранить</button>
+      <button class="btn btn-success" onclick="txOne(1)">Отправить</button>
+    </div>
+  </div>
+
+  <!-- Sensor 2: ZL -->
+  <div class="sensor-card">
+    <div class="pos">ZL — Левое Заднее</div>
+    <div class="field field-id"><label>ID датчика</label><input type="text" id="id2" maxlength="8" placeholder="00000000"></div>
+    <div class="field-row">
+      <div class="field"><label>Давл., кПа</label><input type="number" id="p2" value="230" min="0" max="400"></div>
+      <div class="field"><label>Темп., &deg;C</label><input type="number" id="t2" value="20" min="-40" max="85"></div>
+    </div>
+    <div class="toggle-wrap">
+      <label class="toggle"><input type="checkbox" id="e2" checked><span class="slider"></span></label>
+      <span class="toggle-label" id="el2">Вкл</span>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveSensor(2)">Сохранить</button>
+      <button class="btn btn-success" onclick="txOne(2)">Отправить</button>
+    </div>
+  </div>
+
+  <!-- Sensor 3: ZP -->
+  <div class="sensor-card">
+    <div class="pos">ZP — Правое Заднее</div>
+    <div class="field field-id"><label>ID датчика</label><input type="text" id="id3" maxlength="8" placeholder="00000000"></div>
+    <div class="field-row">
+      <div class="field"><label>Давл., кПа</label><input type="number" id="p3" value="230" min="0" max="400"></div>
+      <div class="field"><label>Темп., &deg;C</label><input type="number" id="t3" value="20" min="-40" max="85"></div>
+    </div>
+    <div class="toggle-wrap">
+      <label class="toggle"><input type="checkbox" id="e3" checked><span class="slider"></span></label>
+      <span class="toggle-label" id="el3">Вкл</span>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveSensor(3)">Сохранить</button>
+      <button class="btn btn-success" onclick="txOne(3)">Отправить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Frequency + Auto-TX settings -->
+<div class="atx-card">
+  <h2>Частота и авто-отправка</h2>
+  <div class="atx-row">
+    <div class="field"><label>Частота, МГц</label>
+      <select id="freqSelect" style="width:100%;padding:6px 8px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:13px;font-family:inherit;outline:none">
+        <option value="315">315</option>
+        <option value="433">433</option>
+      </select>
+    </div>
+    <div class="field"><label>&nbsp;</label><button class="btn btn-outline" onclick="applyFreq()" style="width:100%">Применить</button></div>
+  </div>
+  <div class="atx-row">
+    <div class="field"><label>Интервал, сек</label><input type="number" id="atInterval" placeholder="300" min="5" max="900"></div>
+    <div class="field"><label>Пакетов на датчик</label><input type="number" id="atPackets" value="5" min="1" max="20"></div>
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-warning" onclick="cmdSend('burst')">Burst</button>
+    <button class="btn btn-success" onclick="cmdSend('tx')">Старт</button>
+    <button class="btn btn-danger" onclick="cmdSend('stop')">Стоп</button>
+    <button class="btn btn-outline" onclick="applyAutoTx()">Применить</button>
+  </div>
+  <div class="save-ok" id="atxMsg"></div>
+</div>
+
+<!-- Log -->
+<div class="log-box" id="logBox"></div>
+
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let ws,reconnectTimer;
+
+// --- WebSocket ---
+function initWs(){
+  if(ws&&ws.readyState<2)return;
+  ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws');
+  ws.onopen=()=>{loadStatus();wsSend({cmd:'status'})};
+  ws.onclose=()=>{reconnectTimer=setTimeout(initWs,3000)};
+  ws.onerror=()=>{};
+  ws.onmessage=e=>{try{handleMsg(JSON.parse(e.data))}catch(x){}};
+}
+function wsSend(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o))}
+
+function handleMsg(m){
+  switch(m.t){
+    case 'log': logMsg(m.m); break;
+    case 'status': applyStatus(m.data); break;
+  }
+}
+
+// --- Status → form fields ---
+function applyStatus(d){
+  if(!d)return;
+  if(d.sensors){
+    d.sensors.forEach((s,i)=>{
+      if(s.id) $('id'+i).value=s.id;
+      if(s.pressure!=null) $('p'+i).value=s.pressure;
+      if(s.temp!=null) $('t'+i).value=s.temp;
+      if(s.enabled!=null){
+        $('e'+i).checked=!!s.enabled;
+        $('el'+i).textContent=s.enabled?'Вкл':'Выкл';
+      }
+    });
+  }
+  if(d.freq!=null){
+    $('freqSelect').value=d.freq;
+    $('freqDisplay').textContent=d.freq;
+  }
+  if(d.autoTx){
+    if(d.autoTx.interval!=null) $('atInterval').value=d.autoTx.interval;
+    if(d.autoTx.packets!=null) $('atPackets').value=d.autoTx.packets;
+  }
+}
+
+// --- Load status from REST API ---
+function loadStatus(){
+  fetch('/api/status').then(r=>r.json()).then(d=>applyStatus(d)).catch(()=>{});
+}
+
+// --- Save sensor ---
+function saveSensor(i){
+  const data={sensor:i,id:$('id'+i).value,pressure:+$('p'+i).value,temp:+$('t'+i).value,enabled:$('e'+i).checked};
+  fetch('/api/sensor',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    .then(r=>r.json()).then(j=>{
+      if(j.ok){logMsg('Датчик '+(i+1)+' сохранён','ok');loadStatus()}
+      else logMsg('Ошибка сохранения','err');
+    }).catch(e=>logMsg('Ошибка: '+e,'err'));
+}
+
+// --- Send single sensor ---
+function txOne(i){wsSend({cmd:'tx'+(i+1)})}
+
+// --- Apply auto-TX settings ---
+function applyAutoTx(){
+  const data={interval:+$('atInterval').value,packets:+$('atPackets').value};
+  fetch('/api/autotx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    .then(r=>r.json()).then(j=>{
+      $('atxMsg').textContent=j.ok?'Сохранено':'Ошибка';
+      setTimeout(()=>$('atxMsg').textContent='',2000);
+    }).catch(()=>{});
+}
+
+// --- Apply frequency ---
+function applyFreq(){
+  const freq=+$('freqSelect').value;
+  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({freq:freq})})
+    .then(r=>r.json()).then(j=>{
+      if(j.ok){logMsg('Частота: '+freq+' МГц','ok');loadStatus()}
+      else logMsg('Ошибка установки частоты','err');
+    }).catch(()=>{});
+}
+
+// --- TX commands via WS ---
+function cmdSend(cmd){
+  if(ws&&ws.readyState===1){
+    wsSend({cmd:cmd});
+  }else{
+    fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:cmd})})
+      .then(r=>r.json()).then(()=>loadStatus()).catch(()=>{});
+  }
+}
+
+// --- Log ---
+function logMsg(text,cls){
+  const box=$('logBox');
+  const d=document.createElement('div');
+  if(cls)d.className='log-'+cls;
+  d.textContent=text;
+  box.appendChild(d);
+  if(box.children.length>200)box.removeChild(box.firstChild);
+  box.scrollTop=box.scrollHeight;
+}
+
+// --- Toggle labels ---
+for(let i=0;i<4;i++){
+  $('e'+i).addEventListener('change',function(){
+    $('el'+i).textContent=this.checked?'Вкл':'Выкл';
+  });
+}
+
+// --- Init ---
+loadStatus();
+initWs();
+</script>
+</body>
+</html>
