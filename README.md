@@ -15,6 +15,8 @@
 
 ## Сборка
 
+генератор ключей https://wargaelanor.github.io/tpms-emu/tools/keygen.html
+
 Обе платформы собираются через [PlatformIO](https://platformio.org):
 
 ```bash
