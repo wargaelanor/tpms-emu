@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TPMS Key Generator — ключи для всех МК</title>
+<style>
+  :root {
+    --bg:#0A0F0C; --card:rgba(74,222,128,.03); --border:rgba(74,222,128,.12);
+    --accent:#4ADE80; --accent-press:#3BBE6A; --text:#E0F2E9; --muted:#6B9E7F;
+    --danger:#FCA5A5; --warn:#FBBD24;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:system-ui,'Segoe UI',sans-serif; background:var(--bg); color:var(--text);
+         min-height:100vh; display:flex; justify-content:center; padding:24px 12px; }
+  .wrap { width:100%; max-width:560px; }
+  h1 { font-size:20px; margin-bottom:4px; letter-spacing:.2px; }
+  h1 span { color:var(--accent); }
+  p.sub { color:var(--muted); font-size:13px; margin-bottom:18px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:18px; margin-bottom:14px; }
+  .tabs { display:flex; gap:6px; margin-bottom:14px; }
+  .tab { flex:1; padding:12px; border:1px solid var(--border); border-radius:10px; background:transparent;
+         color:var(--muted); font-size:14px; font-weight:700; cursor:pointer; }
+  .tab.active { background:rgba(74,222,128,.12); color:var(--accent); border-color:var(--accent); }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
+  input[type=text], textarea { width:100%; padding:12px; font-size:16px; letter-spacing:1px;
+      background:rgba(74,222,128,.04); border:1px solid var(--border); border-radius:8px; color:var(--text);
+      font-family:'Consolas',monospace; outline:none; }
+  input:focus, textarea:focus { border-color:var(--accent); }
+  textarea { min-height:96px; letter-spacing:0; font-size:14px; }
+  button { margin-top:12px; width:100%; padding:12px; border:0; border-radius:10px;
+      background:var(--accent); color:var(--bg); font-size:15px; font-weight:700; cursor:pointer; }
+  button:hover { background:var(--accent-press); }
+  button:active { transform:scale(.98); }
+  .hint { font-size:12px; color:var(--muted); margin:8px 0 0; line-height:1.5; }
+  .result { margin-top:16px; }
+  .res-row { display:flex; align-items:center; justify-content:space-between; gap:10px;
+      padding:10px 12px; border:1px solid var(--border); border-radius:8px; margin-top:8px; font-family:'Consolas',monospace; }
+  .res-row .id { color:var(--muted); font-size:13px; }
+  .res-row .key { color:var(--accent); font-size:16px; font-weight:700; letter-spacing:1px; }
+  .copy { background:rgba(74,222,128,.1); border:1px solid var(--border); color:var(--accent);
+      font-size:12px; padding:5px 10px; border-radius:6px; width:auto; margin:0; cursor:pointer; }
+  .copy:hover { background:rgba(74,222,128,.2); }
+  .err { color:var(--danger); font-size:13px; margin-top:10px; white-space:pre-line; }
+  .note { font-size:12px; color:var(--muted); margin-top:16px; line-height:1.6; }
+  .done { color:var(--accent); font-size:12px; margin-top:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>TPMS <span>Key Generator</span></h1>
+  <p class="sub">Единый генератор лицензионных ключей: ESP32-C3 (HMAC-SHA256) · nRF52840 (mul32)</p>
+
+  <div class="tabs">
+    <button class="tab active" data-plat="esp">ESP32-C3</button>
+    <button class="tab" data-plat="nrf">nRF52840</button>
+  </div>
+
+  <div class="card">
+    <label for="input">ID устройства (одно на строку, батч поддерживается)</label>
+    <textarea id="input" placeholder="Например&#10;A1B2C3D4E5F6&#10;A1B2C3D4E5F7"></textarea>
+    <div class="hint" id="hint">ESP32-C3 — 12 hex (MAC устройства). Пример: A1B2C3D4E5F6</div>
+    <button id="btn">Сгенерировать ключи</button>
+    <div class="done" id="done"></div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div class="card" id="reswrap" style="display:none">
+    <button class="btn-copy-all" id="btn-copy-all" style="width:auto;margin:0 0 10px;background:rgba(74,222,128,.1);color:var(--accent);padding:8px 14px;border:1px solid var(--border)">Копировать все</button>
+    <div class="result" id="result"></div>
+  </div>
+
+  <div class="note">
+    Ключи привязаны к устройству. nRF — серийник из письма клиента (1–8 hex).
+    ESP8266 использует простой формат-чек (любой 8-hex ключ), ESP32 — реальная HMAC-проверка.
+  </div>
+</div>
+
+<script>
+"use strict";
+let plat = 'espn';
+
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  plat = t.dataset.plat;
+  document.getElementById('hint').textContent = plat === 'espn'
+    ? 'ESP32-C3 — 12 hex (MAC устройства). Пример: A1B2C3D4E5F6'
+    : 'nRF52840 — серийник 1–8 hex (из письма клиента). Пример: 0123ABCD';
+}));
+
+// --- ESP32-C3: HMAC-SHA256(secret, MAC.toUpperCase())[0:4] -> 8 hex ---
+const ESP_SECRET = new Uint8Array([
+  0x2A,0x7C,0xB9,0x41,0xD3,0xE5,0x8F,0x06,0x9C,0x15,0xF7,0xBA,0x40,0x62,0x83,0x1E
+]);
+
+async function keyForESP(id) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', ESP_SECRET, {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(id.toUpperCase()));
+  const arr = new Uint8Array(sig);
+  return Array.from(arr.slice(0,4)).map(b => b.toString(16).toUpperCase().padStart(2,'0')).join('');
+}
+
+// nRF: mul32 низкая 32-бит половина (совпадает с no#ifdef)
+const mulLow32 = (a,b) => {
+  const alo=a&0xFFFF, ahi=(a>>>16)&0xFFFF, blo=b&0xFFFF, bhi=(b>>>16)&0xFFFF;
+  return ((alo*blo) + ((ahi*blo + alo*bhi)*65536)) >>> 0;
+};
+function keyForNRF(serial) {
+  let k = (serial ^ 0x9C5AA7E1) >>> 0;
+  k = ((k>>>13) | (k<<19)) >>> 0;
+  k = (k ^ 0x3D7B1E8F) >>> 0;
+  k = mulLow32(k, 0x9E3779B9);
+  return k.toString(16).toUpperCase().padStart(8,'0');
+}
+
+const RE_HEX = /^[0-9a-fA-F]+$/;
+
+function parseId(raw) {
+  const id = raw.trim();
+  if (!id) return null;
+  if (plat === 'espn') {
+    if (!RE_HEX.test(id) || id.length !== 12) throw `ESP32-C3: требуется ровно 12 hex-символов MAC, получено "${id}"`;
+    return { id: id.toUpperCase(), str: id.toUpperCase() };
+  }
+  if (!RE_HEX.test(id) || id.length > 8) throw `nRF: серийник 1..8 hex-символов, получено: "${id}"`;
+  return { id: id.toUpperCase(), num: parseInt(id, 16) >>> 0 };
+}
+
+async function processAll(rawList) {
+  const rows = rawList.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!rows.length) throw 'Введите хотя бы один ID.';
+  const out = [];
+  for (const row of rows) {
+    const p = parseId(row);
+    if (!p) throw 'Пустое значение';
+    const key = plat === 'espn' ? await keyForESP(p.id) : keyForNRF(p.num);
+    out.push({ id: p.id, key });
+  }
+  return out;
+}
+
+document.getElementById('btn').addEventListener('click', async () => {
+  const err = document.getElementById('err');
+  const done = document.getElementById('done');
+  err.textContent = ''; done.textContent = '';
+  const raw = document.getElementById('input').value;
+  try {
+    if (plat === 'espn' && !window.crypto?.subtle) {
+      err.textContent = 'Web Crypto (crypto.subtle) недоступен. Откройте через HTTPS или localhost.';
+      return;
+    }
+    const out = await processAll(raw);
+    const res = document.getElementById('result');
+    res.innerHTML = '';
+    out.forEach(r => {
+      const row = document.createElement('div');
+      row.className = 'res-row';
+      row.innerHTML = `<span class="id">${r.id}</span><span class="key">${r.key}</span>`;
+      const b = document.createElement('button');
+      b.className = 'copy'; b.textContent = 'Копир';
+      b.onclick = () => navigator.clipboard.writeText(r.key);
+      row.appendChild(b);
+      res.appendChild(row);
+    });
+    document.getElementById('reswrap').style.display = 'block';
+    done.textContent = `Ключей: ${out.length}`;
+  } catch(e) {
+    err.textContent = e;
+  }
+});
+
+document.getElementById('btn-copy-all').addEventListener('click', () => {
+  const rows = [...document.querySelectorAll('.res-row')]
+    .map(r => `${r.querySelector('.id').textContent}\t${r.querySelector('.key').textContent}`)
+    .join('\n');
+  navigator.clipboard.writeText(rows);
+});
+</script>
+</body>
+</html>
