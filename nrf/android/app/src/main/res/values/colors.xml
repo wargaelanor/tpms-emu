@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#0A0F0C</color>
+    <color name="bg_log">#050806</color>
+    <color name="bg_editor">#0F1A14</color>
+    <color name="bg_sensor">#D914231C</color>
+    <color name="accent">#4ADE80</color>
+    <color name="accent_light">#6EE7A0</color>
+    <color name="accent_text">#A7F3D0</color>
+    <color name="text_primary">#E0F2E9</color>
+    <color name="text_secondary">#6B9E7F</color>
+    <color name="text_muted">#4A7C5F</color>
+    <color name="danger">#FCA5A5</color>
+    <color name="danger_bg">#EF4444</color>
+    <color name="warning">#FBBD24</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="transparent">#00000000</color>
+</resources>

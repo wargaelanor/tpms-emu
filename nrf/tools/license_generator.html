@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Генератор лицензии TPMS-NRF52840</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #f4f6fb; margin: 0; padding: 24px; }
+  .card { max-width: 460px; margin: 0 auto; background: #fff; border-radius: 12px;
+          padding: 24px; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.sub { color: #666; font-size: 13px; margin: 0 0 18px; }
+  label { display: block; font-size: 13px; color: #444; margin-bottom: 6px; }
+  input[type=text] { width: 100%; box-sizing: border-box; padding: 12px;
+          font-size: 18px; letter-spacing: 2px; border: 1px solid #ccc; border-radius: 8px; }
+  button { margin-top: 14px; width: 100%; padding: 12px; font-size: 15px; font-weight: 600;
+           border: 0; border-radius: 8px; background: #1a73e8; color: #fff; cursor: pointer; }
+  button:hover { background: #1765cc; }
+  .result { margin-top: 18px; font-size: 13px; }
+  .key { font-size: 22px; font-weight: 700; letter-spacing: 2px; font-family: monospace;
+         color: #0a7a3a; word-break: break-all; }
+  .err { color: #d32f2f; }
+  .note { margin-top: 16px; font-size: 12px; color: #888; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>Генератор ключа лицензии</h1>
+  <p class="sub">TPMS-NRF52840 · ключ привязан к серийнику конкретного устройства</p>
+
+  <label for="serial">Серийник из письма клиента (8 hex)</label>
+  <input type="text" id="serial" placeholder="0123ABCD" maxlength="8" autocomplete="off" spellcheck="false">
+
+  <button onclick="generate()">Сгенерировать ключ</button>
+
+  <div class="result" id="result"></div>
+  <div class="err" id="err"></div>
+
+  <div class="warn">
+    <div class="note">1. Вставь серийный номер из письма клиента (поле «ID устройства»).
+        <br>2. Ключ = формула из прошивки (FICR DEVICEID + секретная формула).
+        <br>3. Отправь полученный ключ клиенту — он вводится в приложении в поле «Ключ».</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+// Формула ДОЛЖНА совпадать с прошивкой (src/main.cpp, licenseKeyFor()).
+// Умножение по модулю 2^32 без потери точности (32-бит низкая половина).
+function mulLow32(a, b) {
+    const alo = a & 0xFFFF, ahi = (a >>> 16) & 0xFFFF;
+    const blo = b & 0xFFFF, bhi = (b >>> 16) & 0xFFFF;
+    // (ahi*blo + alo*bhi) максимум ~8.6e9; *65536 -> ~5.6e14 < 2^53, точное в double
+    return ((alo * blo) + ((ahi * blo + alo * bhi) * 65536)) >>> 0;
+}
+function licenseKeyFor(serial) {
+    let k = (serial ^ 0x9C5AA7E1) >>> 0;
+    k = ((k >>> 13) | (k << 19)) >>> 0;        // rotate right 13
+    k = (k ^ 0x3D7B1E8F) >>> 0;
+    k = mulLow32(k, 0x9E3779B9);
+    return k;
+}
+
+function generate() {
+    const el = document.getElementById('serial');
+    const res = document.getElementById('result');
+    const err = document.getElementById('err');
+    res.innerHTML = ''; err.textContent = '';
+    const raw = el.value.trim();
+    // Допускаем 1..8 hex-символов
+    if (!/^[0-9a-fA-F]{1,8}$/.test(raw)) {
+        err.textContent = 'Серийник — это hex из 1..8 символов (0-9, A-F). Пример: 0123ABCD';
+        return;
+    }
+    const serial = parseInt(raw, 16) >>> 0;
+    const key = licenseKeyFor(serial);
+    const keyHex = key.toString(16).toUpperCase().padStart(8, '0');
+    res.innerHTML = 'Ключ лицензии: <div class="key">' + keyHex + '</div>';
+    el.value = raw.toUpperCase();
+}
+</script>
+</body>
+</html>
