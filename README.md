@@ -16,6 +16,7 @@
 ## Сборка
 
 генератор ключей https://wargaelanor.github.io/tpms-emu/tools/keygen.html
+web приложение https://wargaelanor.github.io/tpms-emu/nrf/webapp/
 
 Обе платформы собираются через [PlatformIO](https://platformio.org):
 
