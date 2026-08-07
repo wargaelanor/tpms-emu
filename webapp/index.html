@@ -129,13 +129,12 @@
       </div>
     </div>
 
-    <div class="section-title">Калькулятор ресурса АКБ</div>
+    <div class="section-title">Ресурс АКБ</div>
     <div class="form-group">
-      <label>Емкость АКБ (мАч)</label>
+      <label>Ёмкость АКБ (мАч)</label>
       <input type="number" id="input-capacity" value="850" min="100">
     </div>
-    <button class="btn btn-outline" id="btn-calc-batt">Рассчитать</button>
-    <div class="calc-result" id="calc-result">Заполните емкость АКБ, интервал и кол-во пакетов</div>
+    <div class="calc-result" id="calc-result">Расчёт обновится автоматически</div>
 
     <div style="height:16px"></div>
 
@@ -149,12 +148,16 @@
     <div style="height:16px"></div>
 
     <div class="section-title">Лицензия</div>
-    <div class="license-badge license-inactive" id="license-badge">Лицензия не активна</div>
-    <div class="form-group">
-      <label>Ключ активации</label>
-      <input type="text" id="input-license" maxlength="8" placeholder="8 символов">
+    <div class="license-badge license-inactive" id="license-badge">Лицензия не активна — отправка TX отключена</div>
+    <div id="lic-inputs">
+      <div class="form-group">
+        <label>Ключ активации</label>
+        <input type="text" id="input-license" maxlength="8" placeholder="8 hex символов">
+      </div>
+      <button class="btn btn-green" id="btn-activate">Активировать</button>
+      <div style="height:10px"></div>
+      <button class="btn btn-outline" id="btn-license-email">Получить ключ по почте</button>
     </div>
-    <button class="btn btn-green" id="btn-activate">Активировать</button>
 
     <div style="height:16px"></div>
 

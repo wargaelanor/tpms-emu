@@ -21,7 +21,7 @@ let wasSniffActive = false;
 
 const SENSOR_NAMES = ['Левое переднее', 'Правое переднее', 'Левое заднее', 'Правое заднее'];
 let sensors = Array.from({length: 4}, () => ({id: '00000000', p: 0, t: 0, en: true}));
-let settings = { freq: 433, tx_en: 0, tx_int: 60, tx_pkt: 2, license: 0, batt_mv: 0, batt_pct: 0, batt_raw: 0, batt_pin: 0, batt_cal: 0, usb: 0, sniff: 0, disc: [] };
+let settings = { freq: 433, tx_en: 0, tx_int: 60, tx_pkt: 2, license: 0, trial_rem: 0, serial: '', batt_mv: 0, batt_pct: 0, batt_raw: 0, batt_pin: 0, batt_cal: 0, usb: 0, sniff: 0, disc: [] };
 
 // ========== Init ==========
 
@@ -80,9 +80,18 @@ function init() {
   });
   document.getElementById('btn-save-freq').addEventListener('click', saveFreq);
   document.getElementById('btn-activate').addEventListener('click', activateLicense);
+  document.getElementById('btn-license-email').addEventListener('click', openLicenseEmail);
   document.getElementById('btn-batt-cal').addEventListener('click', calibrateBattery);
   document.getElementById('btn-reset-cal').addEventListener('click', () => sendCmd('"cmd":"battcal_reset"'));
-  document.getElementById('btn-calc-batt').addEventListener('click', calcBatteryLife);
+  document.getElementById('btn-batt-cal').addEventListener('click', markCalibrated);
+  document.getElementById('btn-reset-cal').addEventListener('click', () => {
+    localStorage.removeItem('batt_calib_time');
+    renderBattery();
+  });
+
+  ['input-capacity', 'input-interval', 'input-packets'].forEach(id => {
+    document.getElementById(id).addEventListener('input', refreshBatteryLife);
+  });
   
   // Freq radio buttons
   document.querySelectorAll('.freq-btn').forEach(btn => {
@@ -103,6 +112,7 @@ function init() {
   // Load saved prefs
   const cap = localStorage.getItem('batt_capacity_mah');
   if (cap) document.getElementById('input-capacity').value = cap;
+  refreshBatteryLife();
   
   log('Приложение запущено. Нажмите «Поиск» для подключения.');
 }
@@ -317,14 +327,9 @@ function applyStatus(data) {
   
   // License
   settings.license = data.license || 0;
-  const licBadge = document.getElementById('license-badge');
-  if (settings.license) {
-    licBadge.textContent = 'Лицензия активна';
-    licBadge.className = 'license-badge license-active';
-  } else {
-    licBadge.textContent = 'Лицензия не активна';
-    licBadge.className = 'license-badge license-inactive';
-  }
+  settings.trial_rem = data.trial_rem || 0;
+  if (data.serial) settings.serial = data.serial;
+  updateLicenseUi(settings.license, settings.trial_rem, settings.serial);
   
   // Battery
   settings.batt_mv = data.batt_mv || 0;
@@ -373,22 +378,18 @@ function renderBattery() {
   const icon = document.querySelector('.battery-icon');
   const fill = icon.querySelector('.battery-fill');
   const usbMode = usb || (mv === 0 && raw > 0);
-  
+
   icon.className = 'battery-icon' + (usbMode ? ' usb' : (pct < 15 ? ' low' : ''));
   fill.style.width = usbMode ? '100%' : Math.max(2, pct) + '%';
-  
+
   const pctEl = document.querySelector('.battery-pct');
   pctEl.textContent = usbMode ? 'USB' : pct + '%';
   pctEl.style.color = usbMode ? 'var(--accent)' : (pct < 15 ? 'var(--red)' : 'var(--green)');
-  
-  const pinLabel = pin === 255 ? 'VDDH' : `pin=${pin}`;
-  const now = new Date();
-  const timeStr = now.toTimeString().substring(0, 8);
-  let details = `Источник: ${pinLabel} · raw=${raw}\n`;
-  details += `Напряжение: ${(mv / 1000).toFixed(2)} В (${pct}%)\n`;
-  details += `Калибровка: ${cal > 0 ? cal + 'mV' : 'нет'}\n`;
-  if (usb) details += 'Питание: USB (АКБ не измеряется)\n';
-  details += `Обновлено: ${timeStr}`;
+
+  let details = `Напряжение: ${(mv / 1000).toFixed(2)} В (${pct}%)\n`;
+  if (usbMode) details += 'Питание: USB (АКБ не измеряется)\n';
+  const calibTime = parseInt(localStorage.getItem('batt_calib_time') || '0', 10);
+  details += `Последняя калибровка: ${formatAgo(calibTime)}`;
   document.querySelector('.battery-details').textContent = details;
 }
 
@@ -452,47 +453,99 @@ function activateLicense() {
   }
 }
 
+function updateLicenseUi(license, trialRem, serial) {
+  const badge = document.getElementById('license-badge');
+  const inputs = document.getElementById('lic-inputs');
+  inputs.style.display = license === 2 ? 'none' : 'block';
+  if (license === 2) {
+    badge.textContent = 'Лицензия пройдена';
+    badge.className = 'license-badge license-active';
+  } else if (license === 1) {
+    const h = trialRem / 3600.0;
+    const left = h >= 48 ? Math.round(h / 24) + ' дн' : h.toFixed(1) + ' ч';
+    badge.textContent = 'Пробный период: осталось ~' + left;
+    badge.className = 'license-badge license-trial';
+  } else {
+    badge.textContent = 'Лицензия не активна — отправка TX отключена';
+    badge.className = 'license-badge license-inactive';
+  }
+}
+
+function openLicenseEmail() {
+  let body = 'Добрый день!\n\n';
+  body += 'Прошу выдать лицензионный ключ для устройства:\n';
+  body += 'Устройство: TPMS-NRF52840\n';
+  if (settings.serial) {
+    body += 'ID устройства (serial): ' + settings.serial + '\n';
+  } else {
+    body += '(ID устройства появится после подключения по Bluetooth — пришли письмо повторно)\n';
+  }
+  body += 'Спасибо!';
+  const subject = 'Запрос лицензии TPMS-NRF52840';
+  location.href = 'mailto:wargaelanor@ya.ru?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
+}
+
 function calibrateBattery() {
   const mv = parseInt(document.getElementById('input-batt-cal').value);
   if (mv && mv > 0) {
     sendCmd(`"cmd":"battcal","mv":${mv}`);
+    localStorage.setItem('batt_calib_time', String(Date.now()));
+    renderBattery();
   } else {
     log('Введите реальное напряжение АКБ (мВ)', 'err');
   }
 }
 
-function calcBatteryLife() {
+function markCalibrated() {
+  localStorage.setItem('batt_calib_time', String(Date.now()));
+  renderBattery();
+}
+
+function refreshBatteryLife() {
   const capacity = parseInt(document.getElementById('input-capacity').value) || 0;
   const interval = parseInt(document.getElementById('input-interval').value) || 0;
   const packets = parseInt(document.getElementById('input-packets').value) || 0;
   const el = document.getElementById('calc-result');
-  
+
   localStorage.setItem('batt_capacity_mah', capacity);
-  
+
   if (capacity <= 0 || interval <= 0 || packets < 1) {
-    el.textContent = 'Заполните емкость АКБ, интервал и кол-во пакетов';
+    el.textContent = 'Укажи ёмкость, интервал и пакеты';
     el.className = 'calc-result bad';
     return;
   }
-  
-  const baseMa = 2.5;
-  const burstMas = 4.0 * packets * (30.0 * 0.06) + (packets - 1) * (15.0 * 0.1);
-  const txMa = burstMas / interval;
-  const avgMa = baseMa + txMa;
+
+  // Режим сна: между передачами BLE выключен, CC1101 обесточен, CPU спит.
+  const sleepMa = 0.05;
+  const wakeMaS = 15.0 * 0.03;
+  const pktMaS = 25.0 * 0.06;
+  const gapMaS = 3.0 * 0.1;
+  const burstMaS = wakeMaS + packets * pktMaS + (packets - 1) * gapMaS;
+  const avgMa = sleepMa + burstMaS / interval;
   const hours = capacity / avgMa;
-  const burstsPerDay = 86400.0 / interval;
-  const txMahPerDay = burstMas * burstsPerDay / 3600.0;
-  
-  let res = `Базовый ток (BLE+IDLE): ${baseMa.toFixed(2)} мА\n`;
-  res += `Передачи: +${txMa.toFixed(3)} мА (${Math.round(burstsPerDay)} burst/сут ≈ ${txMahPerDay.toFixed(2)} мАч/сут)\n`;
-  res += `Средний ток: ${avgMa.toFixed(2)} мА\n`;
-  res += 'Ресурс: ';
-  if (hours >= 48) res += `~${Math.floor(hours / 24)} сут ${Math.floor(hours) % 24} ч`;
-  else if (hours >= 1) res += `~${hours.toFixed(1)} ч`;
-  else res += `~${Math.round(hours * 60)} мин`;
-  
-  el.textContent = res;
+
+  el.textContent = 'Время работы от АКБ: ≈ ' + formatDuration(hours);
   el.className = 'calc-result good';
+}
+
+function formatDuration(hours) {
+  if (hours >= 8760) return (hours / 8760).toFixed(1) + ' лет';
+  if (hours >= 720) return (hours / 720).toFixed(1) + ' мес';
+  if (hours >= 48) return Math.floor(hours / 24) + ' дн ' + Math.floor(hours) % 24 + ' ч';
+  if (hours >= 1) return hours.toFixed(1) + ' ч';
+  return Math.round(hours * 60) + ' мин';
+}
+
+function formatAgo(timeMillis) {
+  if (!timeMillis) return 'нет';
+  const diff = Date.now() - timeMillis;
+  const d = diff / 86400000.0;
+  const h = diff / 3600000.0;
+  if (diff < 60000) return 'только что';
+  if (d >= 2) return Math.round(d) + ' дн назад';
+  if (d >= 1) return d.toFixed(1) + ' дн назад';
+  if (h >= 1) return h.toFixed(1) + ' ч назад';
+  return Math.round(diff / 60000) + ' мин назад';
 }
 
 // ========== Sniffer ==========
