@@ -337,10 +337,18 @@ async function fetchLatestRelease() {
     const rel = await r.json();
     const assets = rel.assets || [];
     const want = PLAT_ASSETS[plat].map(f => f.asset);
+    const sourcePath = {
+      'bootloader.bin': 'esp/release/bootloader.bin',
+      'partitions.bin': 'esp/release/partitions.bin',
+      'firmware_esp32c3.bin': 'esp/release/firmware_esp32c3.bin',
+      'firmware_esp8266.bin': 'esp/release/firmware_esp8266.bin',
+    };
     const cache = {};
     for (const a of assets) {
       if (want.includes(a.name)) {
-        const ar = await fetch(a.browser_download_url);
+        // Release asset downloads redirect to a host that blocks browser CORS.
+        const rawUrl = `https://raw.githubusercontent.com/wargaelanor/tpms-emu/${rel.target_commitish}/${sourcePath[a.name]}`;
+        const ar = await fetch(rawUrl);
         if (!ar.ok) throw new Error('Ошибка скачивания ' + a.name);
         cache[a.name] = new Uint8Array(await ar.arrayBuffer());
       }
